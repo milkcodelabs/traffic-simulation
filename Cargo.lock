@@ -3376,6 +3376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-engine"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "sim-core",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "sim-ingest"
 version = "0.1.0"
 dependencies = [

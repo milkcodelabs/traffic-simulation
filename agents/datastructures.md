@@ -8,6 +8,7 @@ The compiled network is a static, city-agnostic road graph. Simulation time, sig
 
 ```
 crates/sim-core     graph, fundamental diagram, grades, turns, signals, demand profile, link state, cache
+crates/sim-engine   discrete link-transmission step, spatial queues, signals, bounded-rationality routes
 crates/sim-ingest   OSM XML/PBF, presets, clip, contraction, compilation into sim-core::Network
 crates/sim-ipc      command DTOs and the compact viewport blob
 crates/sim-cli      headless ingestion (the batch runner arrives with the scenario engine)
@@ -280,7 +281,25 @@ A `Scenario` does not mutate the compiled geometry. It stores:
 - per-edge speed scales
 - per-zone demand scales
 
-`scaled_capacity` and `scaled_speed` multiply the edge’s adjusted base values by every matching scale, then clamp at zero. Missing entries scale by 1.
+`scaled_capacity` and `scaled_speed` multiply the edge’s adjusted base values by every matching scale, then clamp at zero. Missing entries scale by 1. A capacity scale of 0 closes the link: nothing enters and nothing leaves. Vehicles already aiming at it stay on the upstream link.
+
+## Time stepper
+
+`sim-engine::Simulation` advances a compiled `Network`. It does not allocate a second graph. Link counts stay in `LinkTransmissionState`: entering adds one to `cumulative_in`, leaving adds one to `cumulative_out`, and the FIFO on that edge has the same length. `cumulative_demand[e]` is the current stock of vehicles that are ready to enter `e` and are still held on the upstream link because `e` is full or closed. It is not a vehicle-step accumulator.
+
+Trips are an explicit list `{depart_s, origin, destination, inertia}`. The compiler still does not invent an origin-destination matrix. A spawned trip is active until it leaves the network at its destination node. The census identity is `spawned = active + completed`, with active equal to vehicles on links plus vehicles waiting at their origin. Completing at a gateway is the sink boundary. No step deletes a vehicle to clear a queue.
+
+One step of length `Δt` is simultaneous, using the vehicle counts at the start of the step:
+
+- A vehicle may leave its current link only after `enter_time + length / v` (minor approaches under priority also wait `tau_yield`).
+- Vehicles leave in FIFO order. The number that may leave an open approach is the integer part of a fractional capacity carry, so the discharged count tracks `q Δt` without creating a vehicle to fill a fraction.
+- Red, all-red, and a capacity of 0 offer no discharge. Unused green is not banked into a later step.
+- Inflow into `e` cannot exceed `max(0, S_max,e − N_e)`. A full link accepts nothing even if it also discharges in the same step, which is the project spillback bound. The rejected vehicle remains on the upstream link and occupies its storage, so the queue moves backward when that link fills.
+- A vehicle moves at most onto the next link of its path. It does not skip a link.
+
+Fixed-cycle discharge is green and yellow for the approaches named on the active phase. Flashing amber and unsignalised nodes use class rank: approaches that share the highest incoming rank keep priority; every lower rank waits `tau_yield_s` and yields the step when a priority vehicle is already at the stop line. `Scenario::forced_mode` overrides the clock. The clock origin defaults to 12:00, so an unchanged controller is on its fixed cycle; the night window still selects flashing amber.
+
+Habitual routes are Dijkstra on free-flow time `length / v`, expanding only turns with `Turn.allowed`. At a decision (origin entry, or the downstream node of a departure) the driver compares the experienced cost of the remaining habitual path with `inertia *` its free-flow cost. Experienced cost of a link is `max(length / v, N / q)`, or infinity when `q = 0`. The default inertia is 1.4. A path is replaced only when that ratio is exceeded, and only by another finite path. Distinct shortest-path queries in a step run on a Rayon pool. Proposals for every node are also computed on that pool from the shared start-of-step snapshot; the merge applies every departure before every entry so a vehicle that just entered cannot be popped as if it had already queued.
 
 ## OSM compilation
 
@@ -345,3 +364,6 @@ repeated edge_count times:
 - Storage equals `lanes * k_jam * length`. Residual storage is the spillback ceiling. The initial link state is empty and conserved.
 - The diurnal fractions sum to 1 and both peaks exceed the night hours.
 - On the fixture network: a two-degree chain contracts without changing length; a signalized crossroad remains; a one-way primary is one direction; a bidirectional secondary is two; a roundabout with two exits stays a directed cycle of at least two edges; a missing speed uses the European urban default; `lanes:forward` is honoured; a restriction removes the banned movement; a one-way dead end gains a reversal edge; a polyline that crosses the box gains a synthetic gateway; cache bytes load back to the same counts.
+- Spillback: a closed downstream link stays empty, the next link stops at `S_max`, and the surplus occupies the link behind it. Opening the closure lets every spawned vehicle complete.
+- A 4 000-vehicle wave satisfies `spawned = active + completed` on every step, and the last arrival matches free-flow time plus discharge at the triangular capacity.
+- Flashing amber on an otherwise empty major approach cuts mean delay by more than the red interval of the fixed cycle. A driver whose experienced cost exceeds 1.4 times free-flow leaves the habitual path; a driver inside that band does not.

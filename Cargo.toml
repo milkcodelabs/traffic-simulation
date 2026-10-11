@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/sim-core",
+    "crates/sim-engine",
     "crates/sim-ingest",
     "crates/sim-ipc",
     "crates/sim-cli",

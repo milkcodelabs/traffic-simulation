@@ -1,0 +1,11 @@
+[package]
+name = "sim-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Link-transmission time stepper, spatial queues, and bounded-rationality routing."
+
+[dependencies]
+rayon = "1"
+sim-core = { path = "../sim-core" }
+thiserror = "1"

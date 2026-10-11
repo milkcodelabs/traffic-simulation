@@ -1,0 +1,10 @@
+[package]
+name = "sim-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop IPC types and the compact viewport geometry blob."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sim-core = { path = "../sim-core" }

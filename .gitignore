@@ -1,0 +1,11 @@
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+/ui/node_modules/
+/ui/dist/
+/node_modules/
+/data/raw/
+/data/cache/
+*.simnet
+.DS_Store
+Thumbs.db

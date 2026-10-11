@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.630" lon="22.930"/>
+  <node id="2" lat="40.630" lon="22.940"/>
+  <node id="3" lat="40.630" lon="22.950">
+    <tag k="highway" v="traffic_signals"/>
+  </node>
+  <node id="4" lat="40.630" lon="22.960"/>
+  <node id="5" lat="40.630" lon="22.970"/>
+  <node id="6" lat="40.640" lon="22.950"/>
+  <node id="7" lat="40.620" lon="22.950"/>
+  <node id="8" lat="40.632" lon="22.962"/>
+  <node id="9" lat="40.633" lon="22.964"/>
+  <node id="10" lat="40.632" lon="22.966"/>
+  <node id="11" lat="40.631" lon="22.964"/>
+  <node id="12" lat="40.625" lon="22.955"/>
+  <node id="13" lat="40.636" lon="22.966"/>
+
+  <way id="100">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="primary"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="lanes" v="2"/>
+    <tag k="name" v="Εγνατία"/>
+  </way>
+  <way id="1001">
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <tag k="highway" v="primary"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="lanes" v="2"/>
+    <tag k="name" v="Εγνατία"/>
+  </way>
+  <way id="101">
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <tag k="highway" v="primary"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="lanes" v="2"/>
+    <tag k="maxspeed" v="50"/>
+    <tag k="name" v="Εγνατία"/>
+  </way>
+  <way id="102">
+    <nd ref="4"/>
+    <nd ref="5"/>
+    <tag k="highway" v="primary"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="lanes" v="2"/>
+    <tag k="maxspeed" v="70"/>
+  </way>
+  <way id="200">
+    <nd ref="7"/>
+    <nd ref="3"/>
+    <nd ref="6"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="oneway" v="no"/>
+    <tag k="lanes" v="3"/>
+    <tag k="lanes:forward" v="2"/>
+    <tag k="lanes:backward" v="1"/>
+  </way>
+  <way id="300">
+    <nd ref="4"/>
+    <nd ref="8"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+  <way id="301">
+    <nd ref="8"/>
+    <nd ref="9"/>
+    <nd ref="10"/>
+    <nd ref="11"/>
+    <nd ref="8"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="junction" v="roundabout"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+  <way id="302">
+    <nd ref="10"/>
+    <nd ref="13"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+  <way id="400">
+    <nd ref="3"/>
+    <nd ref="12"/>
+    <tag k="highway" v="residential"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+  <relation id="900">
+    <member type="way" ref="1001" role="from"/>
+    <member type="node" ref="3" role="via"/>
+    <member type="way" ref="200" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_left_turn"/>
+  </relation>
+</osm>

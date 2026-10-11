@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Traffic Simulation",
+  "version": "0.1.0",
+  "identifier": "gr.traffic.simulation",
+  "build": {
+    "beforeDevCommand": "npm run dev --prefix ../ui",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build --prefix ../ui",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Traffic Simulation",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob: https://tiles.openfreemap.org https://*.openfreemap.org; connect-src 'self' ipc: http://ipc.localhost https://tiles.openfreemap.org https://*.openfreemap.org; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; child-src 'self' blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

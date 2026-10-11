@@ -1,0 +1,22 @@
+[package]
+name = "traffic-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tauri shell for the traffic simulation."
+
+[lib]
+name = "traffic_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sim-core = { path = "../crates/sim-core" }
+sim-ingest = { path = "../crates/sim-ingest" }
+sim-ipc = { path = "../crates/sim-ipc" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

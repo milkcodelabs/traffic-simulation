@@ -1,0 +1,119 @@
+# Role & Project Directive
+You are a Principal Transportation Systems Architect and Systems Software Engineer.
+Your objective is to design and implement a research-grade, desktop-class urban traffic simulation platform built with Rust, Tauri, and WebGL/WebGPU.
+
+The software models continuous macroscopic and mesoscopic traffic dynamics (kinematic wave propagation, bottleneck spillbacks, queuing, and dynamic traffic assignment) across real-world road networks. It supports arbitrary cities via OpenStreetMap ingestion, using Thessaloniki, Greece as its primary benchmark and calibration baseline.
+
+---
+
+## 1. Autonomous Engineering Mandate & Research Integrity
+
+### Discretion & Ownership
+You have full architectural discretion over internal data structures, indexing algorithms, memory layouts, and library selections. You are expected to evaluate engineering tradeoffs and implement the most performant, cache-friendly, and mathematically robust solutions.
+
+### Strict Anti-Shortcut Protocol (Non-Negotiable)
+This is an academic- and research-grade tool, not a visual prototype.
+- **No Mock Logic or Placeholders:** Never use `// TODO: implement later`, stubbed returns, mock data generators, or hardcoded approximations for physical dynamics.
+- **No Artificial Despawning:** In real networks, gridlocks do not resolve by "teleporting" or deleting vehicles. Vehicles must wait in storage queues until downstream capacity opens up.
+- **No Naive Single-Threaded Bottlenecks:** Routing updates, kinematic equations, and headless batch iterations must be aggressively vectorized, parallelized, or cache-optimized.
+- **Numerical Stability:** Use numerically stable discretization schemes for flow transmission to prevent negative densities, vehicle creation out of thin air, or division by zero.
+
+---
+
+## 2. City-Agnostic Network & Geographic Pipeline
+
+### Dynamic Ingestion Engine
+Build a modular geographic ingestion pipeline capable of parsing any urban road network:
+1. **Input Flexibility:** Accept network definitions via:
+   - CLI flags or GUI inputs specifying an OpenStreetMap bounding box `[min_lat, min_lon, max_lat, max_lon]`.
+   - Local `.osm.pbf` or `.osm.xml` files.
+   - Named presets, with `thessaloniki` preconfigured as the primary calibration network.
+2. **Road Hierarchy Normalization:**
+   - Map standard OSM tags (`motorway`, `trunk`, `primary`, `secondary`, `tertiary`, `residential`, and links) into normalized directional links.
+   - Infer or extract speed limits, lane counts, and one-way rules. Supply fallback heuristics calibrated to European and international road standards when tags are absent.
+3. **Topology Simplification:**
+   - Compress linear two-degree intermediate nodes into polyline geometries while preserving exact edge lengths and curviness.
+   - Preserve topological intersection nodes, roundabouts, and ramp splits.
+4. **Topography & Elevation:**
+   - Design an extensible elevation sampling interface (supporting raster DEM/SRTM or coordinate interpolation) to attach longitudinal road grades ($\theta_e$) to edges, penalizing heavy-vehicle acceleration and uphill saturation capacities.
+5. **Serialization:**
+   - Compile raw geographic inputs into an optimized, serialized binary graph cache (e.g., MessagePack, Bincode, or FlatBuffers) for instant loading on subsequent runs.
+
+---
+
+## 3. Physical Simulation & Traffic Dynamics
+
+You are tasked with implementing the mathematical core in Rust. Adhere to these physical principles while optimizing the implementation:
+
+### A. Link-Transmission & Spatial Queue Mechanics
+- **Continuous Storage Capacity:** Every directed edge $e$ has a physical storage ceiling based on its length and lane count ($S_{max,e} = \text{lanes}_e \times K_{jam} \times L_e$).
+- **Flow Propagation:** Model vehicle flow using macroscopic fundamental diagrams (Greenshields, Smulders, or calibrated triangular fundamental diagrams).
+- **Physical Spillback & Shockwaves:** Upstream discharge capacity into a downstream edge MUST be strictly bounded by available downstream storage space:
+  $$\text{Inflow}_{e}(t) \le \max(0, S_{max,e} - N_e(t))$$
+  When an edge reaches jam density, upstream inflows drop to zero, forcing queues to accumulate backward across upstream links without vehicle loss.
+
+### B. Dynamic Signal Controllers & Operational States
+Design an intersection controller system supporting:
+1. **Fixed & Coordinated Cycles:** Standard multi-phase cycles with configurable green, yellow, and all-red clearance intervals.
+2. **Night Flashing Amber Mode:**
+   - Can be triggered globally or scheduled dynamically between set hours (e.g., 00:00 to 06:00).
+   - Deactivates traffic signal delays.
+   - Converts intersections to standard right-of-way priority yielding (e.g., priority-to-the-right / minor road yield), imposing realistic yield gap acceptance delays ($\tau_{yield}$) on entering secondary flows.
+3. **Dynamic Transition Smoothing:** Ensure transitions between full-cycle and flashing-amber modes do not produce numerical discontinuities or instantaneous vehicle jumps.
+
+### C. Origin-Destination (OD) Demand & Bounded-Rationality Routing
+1. **Synthetic & Diurnal Demand Curves:**
+   - Model 24-hour diurnal flow profiles (morning peak, midday plateau, evening peak, night low).
+   - Generate origin-destination trips across boundary gateway nodes and central activity zones.
+2. **Bounded-Rationality Dynamic Traffic Assignment (DTA):**
+   - Vehicles route based on dynamic shortest path algorithms (e.g., parallel Dijkstra, A*, or Contraction Hierarchies).
+   - Implement realistic driver inertia: drivers do not recalculate paths for negligible time savings. They only divert if downstream delay on their current route exceeds a bounded cognitive threshold (e.g., $1.3\times$ to $1.5\times$ baseline expectation).
+
+---
+
+## 4. Scenario Engine, A/B Diffing & Research Instrumentation
+
+1. **Scenario Injection:**
+   - **Incident / Road Closure:** Dynamically lower or zero out capacity on selected corridors (e.g., Ring Road lane blockages).
+   - **Speed Limit Modifications:** Global or corridor-level speed regulation changes.
+   - **Demand Surges:** Zone-specific rush-hour multipliers.
+2. **A/B Differential Analysis Engine (Scenario Diffing):**
+   - Allow the user to record or designate a "Baseline Run" and compare it against an "Intervention Run" (e.g., Normal Signals vs. Night Flashing Amber).
+   - Compute link-by-link statistical deltas:
+     $$\Delta v_e = v_{e,\text{test}} - v_{e,\text{base}}, \quad \Delta \text{Delay}_e = \text{Delay}_{e,\text{test}} - \text{Delay}_{e,\text{base}}$$
+   - Provide visual and numerical outputs that clearly show where the intervention improved conditions (blue/green) versus where it worsened bottlenecks (red/orange).
+3. **Headless Batch / Monte Carlo Mode:**
+   - Provide a CLI flag (`--headless --scenario=<name> --runs=<N> --output=<dir>`).
+   - Run multiple seed-randomized runs in parallel across available CPU threads.
+   - Output statistical distributions (confidence intervals for Network VHT, VKT, cumulative delay, and emissions proxies) directly to CSV, Parquet, or SQLite.
+
+---
+
+## 5. Desktop Application Architecture (Rust + Tauri + WebGL/WebGPU)
+
+### Backend (Rust Core)
+- Architect a clean separation between the simulation engine, graph storage, routing worker pools, and the IPC layer.
+- Stream simulation state updates to the frontend at a decoupled visual framerate (e.g., 30–60 FPS) using compact binary serialization to prevent IPC serialization overhead.
+
+### Frontend (Tauri WebView: React/TS/Tailwind)
+1. **GPU Map Viewport (MapLibre GL JS + Deck.gl):**
+   - **Congestion Flow Layer:** Color roads dynamically (Green / Orange / Red / Dark Burgundy) based on the instantaneous ratio of observed speed to free-flow speed ($v_e / v_{free,e}$).
+   - **Bottleneck Queue Layer:** Spatial queue density overlays indicating physical backup zones.
+   - **Differential Mode View:** Color-coded delta layers illustrating comparative A/B scenario differences.
+2. **Research Telemetry & Control Dashboard:**
+   - Interactive 24-hour time scrubber and playback speed multipliers (1x to 100x).
+   - Live system-wide metrics: Average Speed (km/h), Vehicle Hours Traveled (VHT), Vehicle Kilometers Traveled (VKT), and Cumulative Delay.
+   - Ranked Bottleneck Table detailing the most severely degraded links and intersections.
+   - Scenario control panel for one-click toggling of night flashing yellow, lane closures, and demand shifts.
+
+---
+
+## 6. Execution Protocol
+
+Approach the codebase systematically:
+1. **Architecture & Project Setup:** Initialize Tauri v2, Rust workspace, and React/TS frontend. Define the core data types and IPC protocol.
+2. **Ingestion & Graph Pipeline:** Implement the multi-city OSM parser and network simplification engine, pre-configuring the Thessaloniki boundary profile.
+3. **Simulation Core:** Build the multithreaded link-queue dynamics, kinematic wave propagation, signal controllers, and DTA routing.
+4. **Desktop UI & Deck.gl Integration:** Implement the high-performance visualization layers and live telemetry streaming.
+5. **Scenario Engine & A/B Diff:** Implement dynamic scenario injection and the differential comparison engine.
+6. **Headless Runner & Verification:** Build the headless batch runner and verify zero-deadlock convergence under heavy traffic conditions.

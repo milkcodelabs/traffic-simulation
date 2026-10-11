@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #10140f;
+  color: #e6e1d6;
+}
+
+.maplibregl-ctrl-attrib {
+  background: rgba(16, 20, 15, 0.72) !important;
+  color: #b7b1a4 !important;
+}
+
+.maplibregl-ctrl-attrib a {
+  color: #d7c4a1 !important;
+}

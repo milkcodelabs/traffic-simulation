@@ -1,0 +1,15 @@
+[package]
+name = "sim-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless ingestion for the traffic simulation."
+
+[[bin]]
+name = "sim-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+sim-core = { path = "../sim-core" }
+sim-ingest = { path = "../sim-ingest" }

@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use sim_core::{
-    load_network, DiurnalProfile, Edge, EdgeId, LonLat, Network, Node, NodeId, Phase, Scenario, SignalController,
-    SignalSchedule, Turn, Xy, Zone,
+    load_network, DiurnalProfile, Edge, EdgeId, LonLat, Network, Node, NodeId, Phase, Scenario,
+    SignalController, SignalSchedule, Turn, Xy, Zone,
 };
 use sim_engine::{
-    boundary_demand, emit_seeded_gateway_trips, gateway_zone_scales, local_router_scratch_bytes, retain_routable,
-    Simulation, Trip, SeededCursor,
+    boundary_demand, emit_seeded_gateway_trips, gateway_zone_scales, local_router_scratch_bytes,
+    retain_routable, SeededCursor, Simulation, Trip,
 };
 use sim_ipc::{decode_frame, encode_frame, top_bottlenecks, FrameHeader};
 
@@ -84,7 +84,10 @@ fn run_suite(request: BenchRequest) -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) {
         eprintln!("warning: this binary is unoptimized; do not publish these timings");
     }
-    eprintln!("benchmark host {}", doc["host"]["cpu"].as_str().unwrap_or("unknown"));
+    eprintln!(
+        "benchmark host {}",
+        doc["host"]["cpu"].as_str().unwrap_or("unknown")
+    );
     if request.only != "day" {
         eprintln!("benchmark static {}", request.cache.display());
         let static_part = measure_static(&request.cache)?;
@@ -101,7 +104,7 @@ fn run_suite(request: BenchRequest) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if matches!(request.only.as_str(), "all" | "loads" | "scale") {
-        let loads = load_plan(&request.only);
+        let loads = load_plan();
         let threads = thread_plan(&request.only, request.threads, native);
         for vehicles in loads {
             for thread_count in &threads {
@@ -129,12 +132,8 @@ fn methodology() -> &'static str {
     "Loads release the target number of routable gateway trips at t = 0 on the compiled network, walk warmup_s of simulation time so the first links can discharge, then time measure_ticks calls of step(1.0). Stage times come from the stepper's own timers over that window. Allocation counts are armed only around those steps. Each thread count is a fresh process whose Rayon pool is built at that width. The 24-hour run is the diurnal boundary instrument, the same loop the headless experiment uses."
 }
 
-fn load_plan(only: &str) -> Vec<u64> {
-    if only == "scale" {
-        vec![LOW_VEHICLES, PEAK_VEHICLES, GRIDLOCK_VEHICLES]
-    } else {
-        vec![LOW_VEHICLES, PEAK_VEHICLES, GRIDLOCK_VEHICLES]
-    }
+fn load_plan() -> Vec<u64> {
+    vec![LOW_VEHICLES, PEAK_VEHICLES, GRIDLOCK_VEHICLES]
 }
 
 fn thread_plan(only: &str, requested: Option<usize>, native: usize) -> Vec<usize> {
@@ -153,7 +152,11 @@ fn thread_plan(only: &str, requested: Option<usize>, native: usize) -> Vec<usize
     plan
 }
 
-fn spawn_tick(request: &BenchRequest, vehicles: u64, threads: usize) -> Result<Value, Box<dyn std::error::Error>> {
+fn spawn_tick(
+    request: &BenchRequest,
+    vehicles: u64,
+    threads: usize,
+) -> Result<Value, Box<dyn std::error::Error>> {
     eprintln!("benchmark tick {vehicles} vehicles  threads {threads}");
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -178,8 +181,14 @@ fn spawn_tick(request: &BenchRequest, vehicles: u64, threads: usize) -> Result<V
         object.insert("label".into(), json!(load_label(vehicles)));
     }
     if let Some(mean) = value.get("mean_ms").and_then(|v| v.as_f64()) {
-        let active = value.get("active_before").and_then(|v| v.as_u64()).unwrap_or(0);
-        let rate = value.get("ticks_per_s").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let active = value
+            .get("active_before")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let rate = value
+            .get("ticks_per_s")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         eprintln!("  active {active}  mean {mean:.3} ms  {rate:.1} ticks/s");
     }
     Ok(value)
@@ -230,8 +239,13 @@ fn capture_worker(mut cmd: Command) -> Result<Value, Box<dyn std::error::Error>>
 fn worker_tick(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>> {
     let threads = request.threads.unwrap_or_else(native_threads).max(1);
     let vehicles = request.vehicles.ok_or("tick worker requires --vehicles")?;
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global()?;
-    let _ = writeln!(std::io::stderr(), "worker tick vehicles {vehicles} threads {threads}");
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()?;
+    let _ = writeln!(
+        std::io::stderr(),
+        "worker tick vehicles {vehicles} threads {threads}"
+    );
     let _ = std::io::stderr().flush();
     let loaded = Instant::now();
     let network = Arc::new(load_network(&request.cache)?);
@@ -256,7 +270,10 @@ fn worker_tick(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>>
     sim.step(1.0)?;
     let release_ms = elapsed_ms(release_started);
     let release_searches = sim.route_searches().saturating_sub(searches_before);
-    let _ = writeln!(std::io::stderr(), "worker release {release_ms:.1} ms  searches {release_searches}");
+    let _ = writeln!(
+        std::io::stderr(),
+        "worker release {release_ms:.1} ms  searches {release_searches}"
+    );
     sim.reset_timings();
     let warmup_started = Instant::now();
     advance_to(&mut sim, request.warmup_s)?;
@@ -298,7 +315,10 @@ fn worker_tick(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>>
     let publish = bench_publish(&sim);
     let scratch_main = local_router_scratch_bytes();
     let pool = rayon::current_num_threads().max(1);
-    let scratch_samples: Vec<u64> = (0..pool).into_par_iter().map(|_| local_router_scratch_bytes()).collect();
+    let scratch_samples: Vec<u64> = (0..pool)
+        .into_par_iter()
+        .map(|_| local_router_scratch_bytes())
+        .collect();
     let scratch_sum: u64 = scratch_samples.iter().sum();
     let scratch_max = scratch_samples.iter().copied().max().unwrap_or(0);
     let ticks = samples.len().max(1) as f64;
@@ -308,7 +328,11 @@ fn worker_tick(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>>
     let mut ordered = samples.clone();
     let p50_ms = percentile(&mut ordered, 0.50);
     let p95_ms = percentile(&mut ordered, 0.95);
-    let ticks_per_s = if wall_ms > 0.0 { ticks / (wall_ms / 1e3) } else { 0.0 };
+    let ticks_per_s = if wall_ms > 0.0 {
+        ticks / (wall_ms / 1e3)
+    } else {
+        0.0
+    };
     let routing_ms = ns_to_ms(timings.routing_ns);
     let link_ms = ns_to_ms(timings.link_ns);
     let apply_ms = ns_to_ms(timings.apply_ns);
@@ -395,11 +419,14 @@ fn worker_tick(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>>
 
 fn worker_day(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>> {
     let threads = request.threads.unwrap_or_else(native_threads).max(1);
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global()?;
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()?;
     let _ = writeln!(
         std::io::stderr(),
         "worker day daily {:.0} horizon {:.0}s threads {threads}",
-        request.daily_vehicles, request.horizon_s
+        request.daily_vehicles,
+        request.horizon_s
     );
     let loaded = Instant::now();
     let network = Arc::new(load_network(&request.cache)?);
@@ -446,7 +473,9 @@ fn worker_day(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>> 
             next_sample += 60.0;
         }
         let hour = ((sim.time() / 3600.0).floor() as usize) % 24;
-        let rate = request.daily_vehicles * scenario.global_demand_scale.max(0.0) * profile.hour_fraction[hour];
+        let rate = request.daily_vehicles
+            * scenario.global_demand_scale.max(0.0)
+            * profile.hour_fraction[hour];
         let until = (sim.time() + 1.0).min(horizon);
         let trips = retain_routable(
             emit_seeded_gateway_trips(
@@ -565,6 +594,7 @@ fn worker_day(request: &BenchRequest) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn note_hours(
     sim: &Simulation,
     started: &Instant,
@@ -624,7 +654,8 @@ fn schedule_burst(
     let limit = count.saturating_mul(16).max(count + 1);
     while trips.len() < count && slot < limit {
         let origin = boundary.origins[slot % origins];
-        let destination = boundary.destinations[(slot.wrapping_mul(7).wrapping_add(1)) % destinations];
+        let destination =
+            boundary.destinations[(slot.wrapping_mul(7).wrapping_add(1)) % destinations];
         slot += 1;
         if origin != destination && boundary.allows(origin, destination) {
             trips.push(Trip::new(0.0, origin, destination));
@@ -822,7 +853,10 @@ fn graph_memory(network: &Network) -> Value {
         capacity as u64 * std::mem::size_of::<T>() as u64
     }
     fn text_bytes(value: &Option<String>) -> u64 {
-        value.as_ref().map(|text| text.capacity() as u64).unwrap_or(0)
+        value
+            .as_ref()
+            .map(|text| text.capacity() as u64)
+            .unwrap_or(0)
     }
     let mut geometry_xy = 0u64;
     let mut geometry_lonlat = 0u64;
@@ -860,10 +894,22 @@ fn graph_memory(network: &Network) -> Value {
         + vec_bytes::<u32>(network.adjacency.in_offset.capacity())
         + vec_bytes::<EdgeId>(network.adjacency.in_edges.capacity());
     let turn_offset = vec_bytes::<u32>(network.turn_offset.capacity());
-    let names_total = names + refs + text_bytes(&network.preset_id) + network.stats.diagram.capacity() as u64;
+    let names_total =
+        names + refs + text_bytes(&network.preset_id) + network.stats.diagram.capacity() as u64;
     let geometry = geometry_xy + geometry_lonlat;
-    let total = nodes + edges + geometry + way_ids + names_total + turns + turn_offset + signals + phase_bytes
-        + phase_edge_bytes + zones + adjacency + std::mem::size_of::<Network>() as u64;
+    let total = nodes
+        + edges
+        + geometry
+        + way_ids
+        + names_total
+        + turns
+        + turn_offset
+        + signals
+        + phase_bytes
+        + phase_edge_bytes
+        + zones
+        + adjacency
+        + std::mem::size_of::<Network>() as u64;
     let edge_count = network.edges.len().max(1) as u64;
     let node_count = network.nodes.len().max(1) as u64;
     json!({
@@ -1083,7 +1129,11 @@ fn percentile(samples: &mut [f64], p: f64) -> f64 {
 }
 
 fn pct(part: f64, whole: f64) -> f64 {
-    if whole <= 0.0 { 0.0 } else { 100.0 * part / whole }
+    if whole <= 0.0 {
+        0.0
+    } else {
+        100.0 * part / whole
+    }
 }
 
 fn ns_to_ms(ns: u128) -> f64 {
@@ -1095,7 +1145,9 @@ fn elapsed_ms(started: Instant) -> f64 {
 }
 
 fn native_threads() -> usize {
-    std::thread::available_parallelism().map(|count| count.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
 }
 
 fn write_doc(path: &Path, doc: &Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -1140,15 +1192,29 @@ fn cpu_info() -> CpuInfo {
         ])
         .output();
     let Ok(output) = output else {
-        return CpuInfo { name: "unknown".into(), cores: 0, logical: 0, mhz: 0 };
+        return CpuInfo {
+            name: "unknown".into(),
+            cores: 0,
+            logical: 0,
+            mhz: 0,
+        };
     };
     let text = String::from_utf8_lossy(&output.stdout);
     let mut parts = text.trim().split('|');
     CpuInfo {
         name: parts.next().unwrap_or("unknown").trim().to_string(),
-        cores: parts.next().and_then(|part| part.trim().parse().ok()).unwrap_or(0),
-        logical: parts.next().and_then(|part| part.trim().parse().ok()).unwrap_or(0),
-        mhz: parts.next().and_then(|part| part.trim().parse().ok()).unwrap_or(0),
+        cores: parts
+            .next()
+            .and_then(|part| part.trim().parse().ok())
+            .unwrap_or(0),
+        logical: parts
+            .next()
+            .and_then(|part| part.trim().parse().ok())
+            .unwrap_or(0),
+        mhz: parts
+            .next()
+            .and_then(|part| part.trim().parse().ok())
+            .unwrap_or(0),
     }
 }
 

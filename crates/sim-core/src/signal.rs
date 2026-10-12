@@ -79,7 +79,9 @@ impl SignalController {
 /// movements are not given green together without a priority distinction.
 pub fn plan_signal(node: NodeId, id: SignalId, approaches: &[Approach]) -> SignalController {
     let groups = phase_groups(approaches);
-    let major = approaches.iter().any(|approach| approach.rank >= crate::road::PRIMARY_RANK);
+    let major = approaches
+        .iter()
+        .any(|approach| approach.rank >= crate::road::PRIMARY_RANK);
     let target = if major { 90.0 } else { 60.0 };
     let greens = allocate_greens(&groups, approaches, target);
     let phases = groups
@@ -89,10 +91,16 @@ pub fn plan_signal(node: NodeId, id: SignalId, approaches: &[Approach]) -> Signa
             green_s,
             yellow_s: YELLOW_S,
             all_red_s: ALL_RED_S,
-            incoming: group.into_iter().map(|index| approaches[index].edge).collect(),
+            incoming: group
+                .into_iter()
+                .map(|index| approaches[index].edge)
+                .collect(),
         })
         .collect::<Vec<_>>();
-    let cycle_length_s = phases.iter().map(|phase| phase.green_s + phase.yellow_s + phase.all_red_s).sum();
+    let cycle_length_s = phases
+        .iter()
+        .map(|phase| phase.green_s + phase.yellow_s + phase.all_red_s)
+        .sum();
     SignalController {
         id,
         node,
@@ -122,7 +130,11 @@ fn phase_groups(approaches: &[Approach]) -> Vec<Vec<usize>> {
     let rank = |quadrants: &[usize]| -> Option<u8> {
         quadrants
             .iter()
-            .flat_map(|quadrant| buckets[*quadrant].iter().map(|index| approaches[*index].rank))
+            .flat_map(|quadrant| {
+                buckets[*quadrant]
+                    .iter()
+                    .map(|index| approaches[*index].rank)
+            })
             .max()
     };
     let ns = rank(&[0, 2]);
@@ -137,12 +149,19 @@ fn phase_groups(approaches: &[Approach]) -> Vec<Vec<usize>> {
                 vec![ew_group, ns_group]
             }
         }
-        (Some(_), Some(_)) => (0..4).filter(|quadrant| !buckets[*quadrant].is_empty()).map(|quadrant| buckets[quadrant].clone()).collect(),
+        (Some(_), Some(_)) => (0..4)
+            .filter(|quadrant| !buckets[*quadrant].is_empty())
+            .map(|quadrant| buckets[quadrant].clone())
+            .collect(),
         _ => vec![(0..approaches.len()).collect()],
     }
 }
 
-fn allocate_greens(groups: &[Vec<usize>], approaches: &[Approach], target_cycle_s: f64) -> Vec<f64> {
+fn allocate_greens(
+    groups: &[Vec<usize>],
+    approaches: &[Approach],
+    target_cycle_s: f64,
+) -> Vec<f64> {
     if groups.is_empty() {
         return Vec::new();
     }
@@ -160,7 +179,10 @@ fn allocate_greens(groups: &[Vec<usize>], approaches: &[Approach], target_cycle_
         })
         .collect();
     let lane_total: f64 = lanes.iter().sum();
-    let mut greens: Vec<f64> = lanes.iter().map(|lanes| budget * lanes / lane_total).collect();
+    let mut greens: Vec<f64> = lanes
+        .iter()
+        .map(|lanes| budget * lanes / lane_total)
+        .collect();
     let mut pinned = vec![false; greens.len()];
     for _ in 0..greens.len() {
         let mut deficit = 0.0;

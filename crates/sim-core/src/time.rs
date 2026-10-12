@@ -38,7 +38,7 @@ mod tests {
             end_s: 6 * 3600,
         };
         assert!(wrap.contains(23 * 3600));
-        assert!(wrap.contains(1 * 3600));
+        assert!(wrap.contains(60 * 60));
         assert!(!wrap.contains(12 * 3600));
     }
 }

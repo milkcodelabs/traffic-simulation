@@ -3359,7 +3359,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sim-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "rayon",
@@ -3372,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bincode",
  "serde",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "sim-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rayon",
  "sim-core",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "sim-ingest"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "osmpbf",
  "quick-xml 0.37.5",
@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "sim-ipc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "sim-core",
@@ -4244,7 +4244,7 @@ dependencies = [
 
 [[package]]
 name = "traffic-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",

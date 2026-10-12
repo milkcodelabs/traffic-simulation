@@ -201,4 +201,4 @@ From the repository root, with `data/cache/thessaloniki.simnet` present:
 cargo test --test scientific_audit -- --nocapture
 ```
 
-Each test prints one `AUDIT test=...` line. A failing invariant returns a non-zero exit code. The Thessaloniki cache is gitignored; without it, `thessaloniki_sample_conserves_mass_and_repeats` cannot run. The other thirteen tests build their own networks and do not need the cache.
+Each test prints one `AUDIT test=...` line. A failing invariant returns a non-zero exit code. The compiled cache is the tracked file `data/cache/thessaloniki.simnet`. Without that file, `thessaloniki_sample_conserves_mass_and_repeats` cannot run. The other thirteen tests build their own networks and do not need the cache.

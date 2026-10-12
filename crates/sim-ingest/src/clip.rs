@@ -93,7 +93,11 @@ fn piece(
     }
 }
 
-fn synthetic(point: &LonLat, nodes: &mut rustc_hash::FxHashMap<u64, OsmNode>, next_synthetic: &mut u64) -> ShapePoint {
+fn synthetic(
+    point: &LonLat,
+    nodes: &mut rustc_hash::FxHashMap<u64, OsmNode>,
+    next_synthetic: &mut u64,
+) -> ShapePoint {
     if *next_synthetic < SYNTHETIC_NODE_BASE {
         *next_synthetic = SYNTHETIC_NODE_BASE;
     }
@@ -122,7 +126,10 @@ fn boundary_hits(start: LonLat, end: LonLat, bbox: BBox) -> Vec<(f64, LonLat)> {
         if t <= 1e-9 || t >= 1.0 - 1e-9 || !on_boundary(bbox, point) {
             return;
         }
-        if hits.iter().any(|(existing, _): &(f64, LonLat)| (existing - t).abs() < 1e-9) {
+        if hits
+            .iter()
+            .any(|(existing, _): &(f64, LonLat)| (existing - t).abs() < 1e-9)
+        {
             return;
         }
         hits.push((t, point));
@@ -160,8 +167,10 @@ fn boundary_hits(start: LonLat, end: LonLat, bbox: BBox) -> Vec<(f64, LonLat)> {
 fn on_boundary(bbox: BBox, point: LonLat) -> bool {
     let lon_span = point.lon_deg >= bbox.min_lon - 1e-9 && point.lon_deg <= bbox.max_lon + 1e-9;
     let lat_span = point.lat_deg >= bbox.min_lat - 1e-9 && point.lat_deg <= bbox.max_lat + 1e-9;
-    let on_lon = (point.lon_deg - bbox.min_lon).abs() <= 1e-8 || (point.lon_deg - bbox.max_lon).abs() <= 1e-8;
-    let on_lat = (point.lat_deg - bbox.min_lat).abs() <= 1e-8 || (point.lat_deg - bbox.max_lat).abs() <= 1e-8;
+    let on_lon = (point.lon_deg - bbox.min_lon).abs() <= 1e-8
+        || (point.lon_deg - bbox.max_lon).abs() <= 1e-8;
+    let on_lat = (point.lat_deg - bbox.min_lat).abs() <= 1e-8
+        || (point.lat_deg - bbox.max_lat).abs() <= 1e-8;
     (on_lon && lat_span) || (on_lat && lon_span)
 }
 

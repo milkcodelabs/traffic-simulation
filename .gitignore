@@ -1,11 +1,35 @@
+# Rust / Cargo
 /target/
+**/*.rs.bk
+
+# Node / frontend
+node_modules/
+ui/dist/
+ui/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tauri build outputs
 /src-tauri/target/
 /src-tauri/gen/
-/ui/node_modules/
-/ui/dist/
-/node_modules/
-/data/raw/
-/data/cache/
+
+# Raw geographic inputs. Tracked presets and data/cache/thessaloniki.simnet are not ignored.
+data/raw/*.osm*
+data/raw/*.pbf
+data/experiments/diagnostic_*
+
+# Other compiled networks. The bundled Thessaloniki cache is the exception.
 *.simnet
+!data/cache/thessaloniki.simnet
+
+# Operating system
 .DS_Store
 Thumbs.db
+*.swp
+*~
+
+# Editors. A shared settings file stays tracked when one is added.
+.vscode/*
+!.vscode/settings.json
+.idea/

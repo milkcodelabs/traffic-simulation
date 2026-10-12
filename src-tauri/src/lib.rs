@@ -3,9 +3,13 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use sim_core::{load_network, SignalSchedule};
-use sim_ingest::{default_data_dir, presets, run as compile_network, IngestRequest, IngestSource};
+use sim_ingest::{
+    default_data_dir, presets, run as compile_network, thessaloniki_cache, IngestRequest,
+    IngestSource,
+};
 use sim_ipc::{IngestReport, IngestRequestDto, PresetDto};
 use tauri::ipc::Response;
+use tauri::Manager;
 use tauri::State;
 
 mod session;
@@ -30,7 +34,10 @@ fn list_presets() -> Vec<PresetDto> {
 }
 
 #[tauri::command]
-fn ingest_network(state: State<AppState>, request: IngestRequestDto) -> Result<IngestReport, String> {
+fn ingest_network(
+    state: State<AppState>,
+    request: IngestRequestDto,
+) -> Result<IngestReport, String> {
     let job = match request {
         IngestRequestDto::Preset { name, refresh } => {
             let mut job = IngestRequest::new(IngestSource::Preset(name), default_data_dir());
@@ -38,7 +45,8 @@ fn ingest_network(state: State<AppState>, request: IngestRequestDto) -> Result<I
             job
         }
         IngestRequestDto::BoundingBox { bbox, refresh } => {
-            let mut job = IngestRequest::new(IngestSource::BoundingBox(bbox.into()), default_data_dir());
+            let mut job =
+                IngestRequest::new(IngestSource::BoundingBox(bbox.into()), default_data_dir());
             job.refresh = refresh;
             job
         }
@@ -64,7 +72,8 @@ fn ingest_network(state: State<AppState>, request: IngestRequestDto) -> Result<I
 
 #[tauri::command]
 fn network_summary(cache_path: String) -> Result<IngestReport, String> {
-    let network = load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
+    let network =
+        load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
     Ok(IngestReport {
         cache_path,
         raw_path: None,
@@ -75,7 +84,8 @@ fn network_summary(cache_path: String) -> Result<IngestReport, String> {
 
 #[tauri::command]
 fn network_geometry(cache_path: String) -> Result<Response, String> {
-    let network = load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
+    let network =
+        load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
     Ok(Response::new(encode_geometry(&network)))
 }
 
@@ -84,14 +94,21 @@ fn encode_geometry(network: &sim_core::Network) -> Vec<u8> {
 }
 
 #[tauri::command]
-fn compiled_cache() -> Option<String> {
-    let path = default_data_dir().join("cache").join("thessaloniki.simnet");
-    path.is_file().then(|| path.display().to_string())
+fn compiled_cache(app: tauri::AppHandle) -> Option<String> {
+    let mut bundled = Vec::new();
+    if let Ok(path) = app.path().resolve(
+        "data/cache/thessaloniki.simnet",
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        bundled.push(path);
+    }
+    thessaloniki_cache(&bundled).map(|path| path.display().to_string())
 }
 
 #[tauri::command]
 fn open_simulation(state: State<AppState>, cache_path: String) -> Result<(), String> {
-    let network = load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
+    let network =
+        load_network(std::path::Path::new(&cache_path)).map_err(|error| error.to_string())?;
     let session = Session::spawn(network);
     let mut slot = state.session.lock().map_err(|error| error.to_string())?;
     *slot = Some(session);
@@ -149,7 +166,11 @@ fn simulation_scenario(state: State<AppState>, control: ScenarioControl) -> Resu
     let Some(session) = slot.as_ref() else {
         return Err("Compile a network before running the simulation.".into());
     };
-    session.apply_scenario(control.speed_scale, control.demand_scale, control.lanes_closed)
+    session.apply_scenario(
+        control.speed_scale,
+        control.demand_scale,
+        control.lanes_closed,
+    )
 }
 
 #[tauri::command]

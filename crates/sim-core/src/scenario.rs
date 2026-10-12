@@ -76,7 +76,9 @@ pub fn scaled_capacity(base_veh_per_s: f64, edge: EdgeId, scenario: &Scenario) -
 }
 
 pub fn scaled_speed(base_mps: f64, edge: EdgeId, scenario: &Scenario) -> f64 {
-    (apply_scales(base_mps, edge, &scenario.edge_speed_scale) * scenario.global_speed_scale.max(0.0)).max(0.0)
+    (apply_scales(base_mps, edge, &scenario.edge_speed_scale)
+        * scenario.global_speed_scale.max(0.0))
+    .max(0.0)
 }
 
 /// Dense capacity and speed multipliers, one per edge. Built once per step so a corridor

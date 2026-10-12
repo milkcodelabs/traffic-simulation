@@ -12,8 +12,8 @@ use rayon::prelude::*;
 use sim_core::{DiurnalProfile, Network, Scenario, SignalSchedule, TimeWindow};
 
 use crate::{
-    boundary_demand, emit_seeded_gateway_trips, gateway_zone_scales, retain_routable, EdgeObservation, EngineError, SeededCursor,
-    Simulation,
+    boundary_demand, emit_seeded_gateway_trips, gateway_zone_scales, retain_routable,
+    EdgeObservation, EngineError, SeededCursor, Simulation,
 };
 
 #[derive(Clone, Debug)]
@@ -72,7 +72,22 @@ pub fn night_flashing_scenario() -> Scenario {
     scenario
 }
 
-pub fn run_signal_experiment(network: Arc<Network>, config: &ExperimentConfig) -> Result<ExperimentOutput, EngineError> {
+/// One seeded horizon under a single scenario. The paired experiment calls the same step.
+pub fn run_scenario(
+    network: Arc<Network>,
+    scenario: &Scenario,
+    seed: u64,
+    daily_vehicles: f64,
+    horizon_s: f64,
+) -> Result<RunTotals, EngineError> {
+    let (totals, _) = simulate(&network, scenario, seed, daily_vehicles, horizon_s)?;
+    Ok(totals)
+}
+
+pub fn run_signal_experiment(
+    network: Arc<Network>,
+    config: &ExperimentConfig,
+) -> Result<ExperimentOutput, EngineError> {
     let arms = [baseline_day_scenario(), night_flashing_scenario()];
     let mut jobs = Vec::with_capacity(arms.len() * config.runs.max(1));
     for (arm, scenario) in arms.iter().enumerate() {
@@ -80,7 +95,10 @@ pub fn run_signal_experiment(network: Arc<Network>, config: &ExperimentConfig) -
             jobs.push(Job {
                 arm,
                 scenario: scenario.clone(),
-                seed: config.seed.wrapping_add((arm as u64) << 32).wrapping_add(run as u64),
+                seed: config
+                    .seed
+                    .wrapping_add((arm as u64) << 32)
+                    .wrapping_add(run as u64),
             });
         }
     }
@@ -174,7 +192,13 @@ struct LinkFold {
 
 fn means_delay(fold: &[LinkFold]) -> Vec<f64> {
     fold.iter()
-        .map(|link| if link.n == 0 { 0.0 } else { link.delay / f64::from(link.n) })
+        .map(|link| {
+            if link.n == 0 {
+                0.0
+            } else {
+                link.delay / f64::from(link.n)
+            }
+        })
         .collect()
 }
 
@@ -234,7 +258,7 @@ fn simulate(
                 }
             }
             eprintln!(
-                "seed {seed}  hour {} done  {:.2}s  searches {}  reroutes {}  rejected {}  empty {}  waiting {}  moving {}",
+                "seed {seed}  hour {} done  {:.2}s  searches {}  reroutes {}  rejected {}  empty {}  waiting {}  moving {}  max_density {:.3}  max_queue {}  full {}  spillback {}",
                 hour_index - 1,
                 hour_started.elapsed().as_secs_f64(),
                 searches - searches_mark,
@@ -243,6 +267,10 @@ fn simulate(
                 empty,
                 waiting,
                 moving,
+                sim.max_density(),
+                sim.max_queue(),
+                sim.max_full_edges(),
+                sim.max_spillback(),
             );
             searches_mark = searches;
             reroutes_mark = reroutes;
@@ -250,10 +278,19 @@ fn simulate(
             hour_started = Instant::now();
         }
         let hour = ((sim.time() / 3600.0).floor() as usize) % 24;
-        let rate = daily_vehicles * scenario.global_demand_scale.max(0.0) * profile.hour_fraction[hour];
+        let rate =
+            daily_vehicles * scenario.global_demand_scale.max(0.0) * profile.hour_fraction[hour];
         let until = (sim.time() + 1.0).min(horizon_s);
         let trips = retain_routable(
-            emit_seeded_gateway_trips(&boundary.origins, &boundary.destinations, rate, seed, &zone_scale, &mut cursor, until),
+            emit_seeded_gateway_trips(
+                &boundary.origins,
+                &boundary.destinations,
+                rate,
+                seed,
+                &zone_scale,
+                &mut cursor,
+                until,
+            ),
             &boundary,
             &mut rejected,
         );
@@ -293,6 +330,35 @@ fn simulate(
         rate = steps as f64 / step_s.max(1e-9)
     );
     let census = sim.census();
+    if census.spawned != census.active + census.completed {
+        return Err(EngineError::Conservation {
+            spawned: census.spawned,
+            active: census.active,
+            completed: census.completed,
+        });
+    }
+    for (what, value) in [
+        ("vht", sim.vht_s()),
+        ("vkt", sim.vkt_m()),
+        ("delay", sim.delay_s()),
+        ("mean_speed", sim.mean_speed_mps()),
+    ] {
+        if !value.is_finite() {
+            return Err(EngineError::NonFinite { what });
+        }
+    }
+    eprintln!(
+        "conservation spawned {} active {} completed {} on_links {} waiting {}  saturation max_density {:.3} max_queue {} full_edges {} spillback {}",
+        census.spawned,
+        census.active,
+        census.completed,
+        census.on_links,
+        census.waiting,
+        sim.max_density(),
+        sim.max_queue(),
+        sim.max_full_edges(),
+        sim.max_spillback(),
+    );
     let totals = RunTotals {
         seed,
         vht_s: sim.vht_s(),

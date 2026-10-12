@@ -9,6 +9,7 @@ use sim_core::{load_network, BBox};
 use sim_ingest::{default_data_dir, run, IngestRequest, IngestSource};
 
 mod alloc_count;
+mod audit;
 mod benchmark;
 mod experiment;
 
@@ -16,7 +17,10 @@ mod experiment;
 static GLOBAL: alloc_count::CountingAlloc = alloc_count::CountingAlloc;
 
 #[derive(Parser)]
-#[command(name = "sim-cli", about = "Compile a road network and run headless scenario experiments.")]
+#[command(
+    name = "sim-cli",
+    about = "Compile a road network and run headless scenario experiments."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -39,11 +43,33 @@ enum Command {
         refresh: bool,
     },
     /// Print the stats stored in a cache.
-    Summary {
+    #[command(visible_alias = "summary")]
+    Inspect {
         #[arg(long)]
         cache: PathBuf,
     },
+    /// Advance one scenario over a horizon and print network totals.
+    Run {
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Named city cache. `thessaloniki` loads `data/cache/thessaloniki.simnet`.
+        #[arg(long, default_value = "thessaloniki")]
+        preset: String,
+        /// Scenario JSON. See `data/presets/`.
+        #[arg(long)]
+        scenario: PathBuf,
+        #[arg(long, default_value_t = 6000.0)]
+        daily_vehicles: f64,
+        #[arg(long, default_value_t = 86400.0)]
+        horizon_s: f64,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Directory for `run.csv`. Omit to print totals only.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Compare baseline fixed signals with night flashing amber.
+    #[command(visible_alias = "batch")]
     Experiment {
         /// Run the paired Monte Carlo batch on the CPU pool.
         #[arg(long)]
@@ -94,6 +120,14 @@ enum Command {
         #[arg(long, default_value = "all")]
         only: String,
     },
+    /// Report link length and Courant number on a compiled cache.
+    Audit {
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Named city cache. `thessaloniki` loads `data/cache/thessaloniki.simnet`.
+        #[arg(long, default_value = "thessaloniki")]
+        preset: String,
+    },
 }
 
 fn main() {
@@ -121,7 +155,8 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 IngestSource::Preset("thessaloniki".into())
             };
-            let mut request = IngestRequest::new(source, cache_dir.unwrap_or_else(default_data_dir));
+            let mut request =
+                IngestRequest::new(source, cache_dir.unwrap_or_else(default_data_dir));
             request.refresh = refresh;
             let output = run(request)?;
             let stats = &output.network.stats;
@@ -131,7 +166,13 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!(
                 "nodes {}  edges {}  turns {}  banned {}  signals {}  gateways {}  zones {}",
-                stats.nodes, stats.edges, stats.turns, stats.banned_turns, stats.signals, stats.gateways, stats.zones
+                stats.nodes,
+                stats.edges,
+                stats.turns,
+                stats.banned_turns,
+                stats.signals,
+                stats.gateways,
+                stats.zones
             );
             println!(
                 "length {:.1} km  lane-km {:.1}  mean edge {:.1} m  contractions {}  diagram {}",
@@ -167,7 +208,7 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
             let cache = cache.unwrap_or_else(|| cache_for_preset(&preset));
             experiment::run_headless(&cache, &output, runs, daily_vehicles, horizon_s, seed)?;
         }
-        Command::Summary { cache } => {
+        Command::Inspect { cache } => {
             let network = load_network(&cache)?;
             let stats = &network.stats;
             println!(
@@ -178,6 +219,29 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
                 stats.signals,
                 stats.diagram
             );
+        }
+        Command::Run {
+            cache,
+            preset,
+            scenario,
+            daily_vehicles,
+            horizon_s,
+            seed,
+            output,
+        } => {
+            let cache = cache.unwrap_or_else(|| cache_for_preset(&preset));
+            experiment::run_one(
+                &cache,
+                &scenario,
+                output.as_deref(),
+                daily_vehicles,
+                horizon_s,
+                seed,
+            )?;
+        }
+        Command::Audit { cache, preset } => {
+            let cache = cache.unwrap_or_else(|| cache_for_preset(&preset));
+            audit::report(&cache)?;
         }
         Command::Benchmark {
             cache,
@@ -213,6 +277,11 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cache_for_preset(preset: &str) -> PathBuf {
+    if preset == "thessaloniki" {
+        if let Some(path) = sim_ingest::thessaloniki_cache(&[]) {
+            return path;
+        }
+    }
     let name = format!("{preset}.simnet");
     let rooted = sim_ingest::default_data_dir().join("cache").join(&name);
     if rooted.exists() {
@@ -231,7 +300,11 @@ fn cache_for_preset(preset: &str) -> PathBuf {
 fn parse_bbox(text: &str) -> Result<BBox, String> {
     let parts: Vec<f64> = text
         .split(',')
-        .map(|part| part.trim().parse::<f64>().map_err(|error| error.to_string()))
+        .map(|part| {
+            part.trim()
+                .parse::<f64>()
+                .map_err(|error| error.to_string())
+        })
         .collect::<Result<_, _>>()?;
     if parts.len() != 4 {
         return Err("bbox must be min_lat,min_lon,max_lat,max_lon".into());

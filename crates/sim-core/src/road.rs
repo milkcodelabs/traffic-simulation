@@ -23,7 +23,11 @@ impl RoadClass {
     pub fn is_link(self) -> bool {
         matches!(
             self,
-            Self::MotorwayLink | Self::TrunkLink | Self::PrimaryLink | Self::SecondaryLink | Self::TertiaryLink
+            Self::MotorwayLink
+                | Self::TrunkLink
+                | Self::PrimaryLink
+                | Self::SecondaryLink
+                | Self::TertiaryLink
         )
     }
 
@@ -135,7 +139,9 @@ pub fn default_lanes(class: RoadClass, oneway: bool) -> u8 {
 
 pub fn jam_spacing_m(class: RoadClass) -> f64 {
     match class {
-        RoadClass::Motorway | RoadClass::MotorwayLink | RoadClass::Trunk | RoadClass::TrunkLink => 8.0,
+        RoadClass::Motorway | RoadClass::MotorwayLink | RoadClass::Trunk | RoadClass::TrunkLink => {
+            8.0
+        }
         _ => 7.5,
     }
 }
@@ -146,7 +152,9 @@ pub fn jam_density_per_lane(class: RoadClass) -> f64 {
 
 pub fn wave_speed_mps(class: RoadClass) -> f64 {
     match class {
-        RoadClass::Motorway | RoadClass::MotorwayLink | RoadClass::Trunk | RoadClass::TrunkLink => 5.56,
+        RoadClass::Motorway | RoadClass::MotorwayLink | RoadClass::Trunk | RoadClass::TrunkLink => {
+            5.56
+        }
         _ => 5.0,
     }
 }

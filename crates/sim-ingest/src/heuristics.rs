@@ -41,7 +41,10 @@ pub fn resolve_way(way: &OsmWay) -> Option<ResolvedWay> {
     let (speed_mps, speed_warning) = resolve_speed(way.maxspeed.as_deref(), class);
     Some(ResolvedWay {
         class,
-        destination_only: way.access.as_deref().is_some_and(|value| value.eq_ignore_ascii_case("destination")),
+        destination_only: way
+            .access
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("destination")),
         roundabout,
         bridge: way.bridge,
         tunnel: way.tunnel,
@@ -142,7 +145,10 @@ fn parse_lane_count(value: &str) -> Option<u8> {
 }
 
 fn blocked_access(value: Option<&str>) -> bool {
-    matches!(value.map(|item| item.to_ascii_lowercase()).as_deref(), Some("no" | "private"))
+    matches!(
+        value.map(|item| item.to_ascii_lowercase()).as_deref(),
+        Some("no" | "private")
+    )
 }
 
 fn blocked_service(value: &str) -> bool {

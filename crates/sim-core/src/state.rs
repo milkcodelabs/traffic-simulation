@@ -50,7 +50,10 @@ impl LinkTransmissionState {
     }
 
     pub fn available_storage(&self, network: &Network, edge: EdgeId) -> f64 {
-        storage_inflow_ceiling(network.edges[edge.index()].storage_max_veh, self.vehicles(edge))
+        storage_inflow_ceiling(
+            network.edges[edge.index()].storage_max_veh,
+            self.vehicles(edge),
+        )
     }
 
     pub fn conserved(&self) -> bool {

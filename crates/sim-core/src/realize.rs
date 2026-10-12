@@ -2,7 +2,9 @@ use thiserror::Error;
 
 use crate::fd::{equilibrium_flow, triangular_capacity, DiagramFamily};
 use crate::geo::{polyline_length_m, LonLat, Xy};
-use crate::grade::{grades_from_profile, saturation_capacity_factor, speed_grade_factor, GradeSample};
+use crate::grade::{
+    grades_from_profile, saturation_capacity_factor, speed_grade_factor, GradeSample,
+};
 use crate::graph::{Edge, EdgeFlags};
 use crate::id::NodeId;
 use crate::road::{jam_density_per_lane, wave_speed_mps, RoadClass};
@@ -68,22 +70,31 @@ pub fn realize_edge(draft: EdgeDraft) -> Result<Edge, RealizeError> {
     let wave = wave_speed_mps(draft.class);
     let base_capacity = textbook_capacity(draft.diagram, draft.posted_speed_mps, wave, jam_link)?;
     let speed_factor = speed_grade_factor(grades.uphill_grade_rad);
-    let capacity_factor = saturation_capacity_factor(grades.uphill_grade_rad, draft.heavy_vehicle_share);
+    let capacity_factor =
+        saturation_capacity_factor(grades.uphill_grade_rad, draft.heavy_vehicle_share);
     let free_flow = draft.posted_speed_mps * speed_factor;
     let capacity = base_capacity * capacity_factor;
     if free_flow <= 0.0 || capacity < 0.0 {
-        return Err(RealizeError::Diagram("adjusted speed or capacity is not positive".into()));
+        return Err(RealizeError::Diagram(
+            "adjusted speed or capacity is not positive".into(),
+        ));
     }
 
     let critical_speed = match draft.diagram {
         DiagramFamily::Triangular => free_flow,
         DiagramFamily::Greenshields => free_flow * 0.5,
-        DiagramFamily::Smulders { critical_speed_ratio } => free_flow * critical_speed_ratio,
+        DiagramFamily::Smulders {
+            critical_speed_ratio,
+        } => free_flow * critical_speed_ratio,
     };
     if critical_speed <= 0.0 || capacity / critical_speed >= jam_link {
         return Err(RealizeError::Diagram(format!(
             "critical density {:.6} is not below jam density {:.6}",
-            if critical_speed > 0.0 { capacity / critical_speed } else { f64::INFINITY },
+            if critical_speed > 0.0 {
+                capacity / critical_speed
+            } else {
+                f64::INFINITY
+            },
             jam_link
         )));
     }
@@ -134,13 +145,22 @@ pub fn realize_edge(draft: EdgeDraft) -> Result<Edge, RealizeError> {
     })
 }
 
-fn textbook_capacity(family: DiagramFamily, speed: f64, wave: f64, jam_link: f64) -> Result<f64, RealizeError> {
+fn textbook_capacity(
+    family: DiagramFamily,
+    speed: f64,
+    wave: f64,
+    jam_link: f64,
+) -> Result<f64, RealizeError> {
     let capacity = match family {
         DiagramFamily::Greenshields => speed * jam_link / 4.0,
-        DiagramFamily::Triangular | DiagramFamily::Smulders { .. } => triangular_capacity(speed, wave, jam_link),
+        DiagramFamily::Triangular | DiagramFamily::Smulders { .. } => {
+            triangular_capacity(speed, wave, jam_link)
+        }
     };
     if capacity <= 0.0 {
-        return Err(RealizeError::Diagram("textbook capacity is not positive".into()));
+        return Err(RealizeError::Diagram(
+            "textbook capacity is not positive".into(),
+        ));
     }
     Ok(capacity)
 }
@@ -157,10 +177,22 @@ mod tests {
         let edge = realize_edge(EdgeDraft {
             from: NodeId(0),
             to: NodeId(1),
-            geometry_xy: vec![Xy { x_m: 0.0, y_m: 0.0 }, Xy { x_m: 1000.0, y_m: 0.0 }],
+            geometry_xy: vec![
+                Xy { x_m: 0.0, y_m: 0.0 },
+                Xy {
+                    x_m: 1000.0,
+                    y_m: 0.0,
+                },
+            ],
             geometry_lonlat: vec![
-                LonLat { lon_deg: 22.9, lat_deg: 40.6 },
-                LonLat { lon_deg: 22.91, lat_deg: 40.6 },
+                LonLat {
+                    lon_deg: 22.9,
+                    lat_deg: 40.6,
+                },
+                LonLat {
+                    lon_deg: 22.91,
+                    lat_deg: 40.6,
+                },
             ],
             elevations_m: vec![Some(0.0), Some(50.0)],
             ignore_grade: false,

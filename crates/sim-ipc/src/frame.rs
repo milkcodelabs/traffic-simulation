@@ -82,7 +82,10 @@ pub fn encode_frame(
     queue_veh: &[f32],
     out: &mut Vec<u8>,
 ) {
-    let edges = speed_ratio.len().min(density_ratio.len()).min(queue_veh.len());
+    let edges = speed_ratio
+        .len()
+        .min(density_ratio.len())
+        .min(queue_veh.len());
     out.clear();
     out.reserve(FRAME_HEADER_BYTES + bottlenecks.len() * 12 + edges * 12);
     push_u32(out, FRAME_MAGIC);
@@ -151,11 +154,15 @@ pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame<'_>, String> {
     }
     let magic = read_u32(bytes, 0);
     if magic != FRAME_MAGIC {
-        return Err(format!("simulation frame magic {magic:#x} is not {FRAME_MAGIC:#x}"));
+        return Err(format!(
+            "simulation frame magic {magic:#x} is not {FRAME_MAGIC:#x}"
+        ));
     }
     let version = read_u32(bytes, 4);
     if version != FRAME_VERSION {
-        return Err(format!("simulation frame version {version} is not {FRAME_VERSION}"));
+        return Err(format!(
+            "simulation frame version {version} is not {FRAME_VERSION}"
+        ));
     }
     let flags = read_u32(bytes, 28);
     let unchanged = flags & FLAG_UNCHANGED != 0;
@@ -179,7 +186,10 @@ pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame<'_>, String> {
     let columns = edges * 4;
     let need = table + columns * 3;
     if bytes.len() < need {
-        return Err(format!("simulation frame needs {need} bytes and has {}", bytes.len()));
+        return Err(format!(
+            "simulation frame needs {need} bytes and has {}",
+            bytes.len()
+        ));
     }
     let mut bottlenecks = Vec::with_capacity(listed);
     for index in 0..listed {

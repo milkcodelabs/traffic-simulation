@@ -12,16 +12,34 @@ fn thessaloniki_preset_compiles_a_connected_graph() {
     let request = IngestRequest::new(IngestSource::Preset("thessaloniki".into()), &data_dir);
     let output = run(request).expect("Thessaloniki preset should download and compile");
     let network = &output.network;
-    network.validate().expect("compiled graph should satisfy its invariants");
+    network
+        .validate()
+        .expect("compiled graph should satisfy its invariants");
 
     assert_eq!(network.preset_id.as_deref(), Some("thessaloniki"));
     assert!(network.stats.nodes > 1_000, "nodes {}", network.stats.nodes);
     assert!(network.stats.edges > 1_000, "edges {}", network.stats.edges);
-    assert!(network.stats.total_length_m > 100_000.0, "length {}", network.stats.total_length_m);
-    assert!(network.stats.signals > 0, "a signalised city extract should keep signal nodes");
-    assert!(network.stats.contractions > 0, "degree-2 vertices should contract");
-    assert!(network.stats.banned_turns > 0, "OSM turn restrictions should ban movements");
-    assert!(network.stats.gateways > 0, "the bounding box should cut gateways");
+    assert!(
+        network.stats.total_length_m > 100_000.0,
+        "length {}",
+        network.stats.total_length_m
+    );
+    assert!(
+        network.stats.signals > 0,
+        "a signalised city extract should keep signal nodes"
+    );
+    assert!(
+        network.stats.contractions > 0,
+        "degree-2 vertices should contract"
+    );
+    assert!(
+        network.stats.banned_turns > 0,
+        "OSM turn restrictions should ban movements"
+    );
+    assert!(
+        network.stats.gateways > 0,
+        "the bounding box should cut gateways"
+    );
 
     let census = network.weak_components();
     let share = census.largest_length_m / network.stats.total_length_m;
@@ -40,7 +58,11 @@ fn thessaloniki_preset_compiles_a_connected_graph() {
         let paired = network.edges.iter().any(|other| {
             other.from == edge.to && other.to == edge.from && !other.flags.dead_end_reversal
         });
-        assert!(paired, "dead-end reversal {} -> {} has no forward edge", edge.from.0, edge.to.0);
+        assert!(
+            paired,
+            "dead-end reversal {} -> {} has no forward edge",
+            edge.from.0, edge.to.0
+        );
     }
 
     let copy = data_dir.join("cache").join("thessaloniki.roundtrip.simnet");

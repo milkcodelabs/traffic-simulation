@@ -6,9 +6,9 @@
 //! boundary condition obvious.
 
 use sim_core::{
-    equilibrium_flow, plan_signal, realize_edge, Approach, AssembleInput, BBox, DiagramFamily, Edge, EdgeDraft,
-    EdgeFlags, EdgeId, EdgeScale, LonLat, Movement, Network, Node, NodeId, NodeKind, RoadClass, Scenario, SignalId,
-    SignalSchedule, Turn, UtmProjection, Xy,
+    equilibrium_flow, plan_signal, realize_edge, Approach, AssembleInput, BBox, DiagramFamily,
+    Edge, EdgeDraft, EdgeFlags, EdgeId, EdgeScale, LonLat, Movement, Network, Node, NodeId,
+    NodeKind, RoadClass, Scenario, SignalId, SignalSchedule, Turn, UtmProjection, Xy,
 };
 use sim_engine::{boundary_demand, emit_seeded_gateway_trips, SeededCursor, Simulation, Trip};
 
@@ -38,7 +38,15 @@ fn node(kind: NodeKind, x: f64, y: f64) -> Node {
     }
 }
 
-fn link(from: NodeId, to: NodeId, shape: &[(f64, f64)], class: RoadClass, lanes: u8, speed_mps: f64, way: u64) -> Edge {
+fn link(
+    from: NodeId,
+    to: NodeId,
+    shape: &[(f64, f64)],
+    class: RoadClass,
+    lanes: u8,
+    speed_mps: f64,
+    way: u64,
+) -> Edge {
     realize_edge(EdgeDraft {
         from,
         to,
@@ -76,7 +84,12 @@ fn through(node: NodeId, from: EdgeId, to: EdgeId) -> Turn {
     }
 }
 
-fn assemble(nodes: Vec<Node>, edges: Vec<Edge>, turns: Vec<Turn>, signals: Vec<sim_core::SignalController>) -> Network {
+fn assemble(
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    turns: Vec<Turn>,
+    signals: Vec<sim_core::SignalController>,
+) -> Network {
     Network::assemble(AssembleInput {
         preset_id: None,
         bbox: bbox(),
@@ -123,12 +136,24 @@ fn chain(lengths: &[f64], class: RoadClass, lanes: u8, speed_mps: f64) -> Networ
         x = next;
     }
     let turns = (0..lengths.len().saturating_sub(1))
-        .map(|index| through(NodeId((index + 1) as u32), EdgeId(index as u32), EdgeId((index + 1) as u32)))
+        .map(|index| {
+            through(
+                NodeId((index + 1) as u32),
+                EdgeId(index as u32),
+                EdgeId((index + 1) as u32),
+            )
+        })
         .collect();
     assemble(nodes, edges, turns, Vec::new())
 }
 
-fn departures(count: usize, origin: NodeId, destination: NodeId, start_s: f64, interval_s: f64) -> Vec<Trip> {
+fn departures(
+    count: usize,
+    origin: NodeId,
+    destination: NodeId,
+    start_s: f64,
+    interval_s: f64,
+) -> Vec<Trip> {
     (0..count)
         .map(|index| Trip::new(start_s + index as f64 * interval_s, origin, destination))
         .collect()
@@ -144,10 +169,18 @@ fn assert_step_bounds(sim: &Simulation) {
         sim.time()
     );
     assert_eq!(census.active, census.on_links + census.waiting);
-    assert_eq!(sim.vehicles().len() as u64, census.spawned, "a rejected trip must not occupy an id");
+    assert_eq!(
+        sim.vehicles().len() as u64,
+        census.spawned,
+        "a rejected trip must not occupy an id"
+    );
     assert!(sim.vht_s().is_finite() && sim.vkt_m().is_finite() && sim.delay_s().is_finite());
     assert!(sim.delay_s() >= -1e-6, "network delay {:.6}", sim.delay_s());
-    let arrived = sim.vehicles().iter().filter(|vehicle| vehicle.arrive_s.is_some()).count() as u64;
+    let arrived = sim
+        .vehicles()
+        .iter()
+        .filter(|vehicle| vehicle.arrive_s.is_some())
+        .count() as u64;
     assert_eq!(arrived, census.completed);
     for (index, edge) in sim.network().edges.iter().enumerate() {
         let count = sim.link_vehicles(EdgeId(index as u32));
@@ -177,7 +210,9 @@ fn assert_step_bounds(sim: &Simulation) {
 fn assert_trip_delays(sim: &Simulation) {
     let mut worst = 0.0_f64;
     for vehicle in sim.vehicles() {
-        let Some(arrive) = vehicle.arrive_s else { continue };
+        let Some(arrive) = vehicle.arrive_s else {
+            continue;
+        };
         assert!(arrive + 1e-6 >= vehicle.depart_s);
         let delay = arrive - vehicle.depart_s - vehicle.habitual_s;
         worst = worst.min(delay);
@@ -244,7 +279,11 @@ fn theil_u(predicted: &[f64], observed: &[f64]) -> f64 {
 
 fn mean_std(values: &[f64]) -> (f64, f64) {
     let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let variance = values.iter().map(|value| (value - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
     (mean, variance.sqrt())
 }
 
@@ -283,7 +322,10 @@ fn mass_is_conserved_and_storage_bounds_a_gateway_burst() {
     assert_step_bounds(&sim);
     let burst = sim.link_vehicles(EdgeId(0));
     assert!(burst as f64 <= storage0 + 1e-6);
-    assert!(burst >= 1, "the gateway must be able to load the entrance link");
+    assert!(
+        burst >= 1,
+        "the gateway must be able to load the entrance link"
+    );
     let cleared = finish(&mut sim, wave as u64, 4_000.0);
     assert!(cleared, "census {:?}", sim.census());
     assert_trip_delays(&sim);
@@ -306,8 +348,15 @@ fn short_link_above_the_courant_limit_stays_inside_jam_and_free_flow() {
     let network = chain(&[8.0], RoadClass::Motorway, 1, 30.0);
     let edge = &network.edges[0];
     let courant = edge.free_flow_speed_mps * DT / edge.length_m;
-    assert!(courant > 1.0, "Courant {courant:.3} — this case is outside a classical CFL step");
-    assert!(edge.storage_max_veh <= 1.0 + 1e-6, "storage {:.4}", edge.storage_max_veh);
+    assert!(
+        courant > 1.0,
+        "Courant {courant:.3} — this case is outside a classical CFL step"
+    );
+    assert!(
+        edge.storage_max_veh <= 1.0 + 1e-6,
+        "storage {:.4}",
+        edge.storage_max_veh
+    );
     let free = edge.length_m / edge.free_flow_speed_mps;
     let mut sim = Simulation::new(network, Scenario::baseline("cfl"));
     let count = 12;
@@ -330,7 +379,10 @@ fn short_link_above_the_courant_limit_stays_inside_jam_and_free_flow() {
         let travel = arrive - vehicle.depart_s;
         min_travel = min_travel.min(travel);
         max_speed = max_speed.max(edge_length_over(&sim, travel));
-        assert!(travel + 1e-6 >= free, "travel {travel:.4}s shorter than free-flow {free:.4}s");
+        assert!(
+            travel + 1e-6 >= free,
+            "travel {travel:.4}s shorter than free-flow {free:.4}s"
+        );
     }
     assert!(max_speed <= 30.0 + 1e-6, "speed {max_speed:.4} m/s");
     assert_trip_delays(&sim);
@@ -384,9 +436,15 @@ fn spillback_blocks_the_upstream_link_without_oscillation_or_loss() {
         previous = mid;
     }
     let full_at = full_at.expect("the feeder reaches storage");
-    assert_eq!(oscillations, 0, "mid-link count fell while the exit was closed");
+    assert_eq!(
+        oscillations, 0,
+        "mid-link count fell while the exit was closed"
+    );
     assert_eq!(sim.link_vehicles(EdgeId(1)), mid_cap);
-    assert!(sim.link_vehicles(EdgeId(0)) > 0, "surplus must stand on the upstream link");
+    assert!(
+        sim.link_vehicles(EdgeId(0)) > 0,
+        "surplus must stand on the upstream link"
+    );
     assert_eq!(sim.census().completed, 0);
     assert_eq!(sim.census().active, 50);
     sim.scenario_mut().edge_capacity_scale.clear();
@@ -424,7 +482,12 @@ fn one_link_queue_is_fifo_and_discharge_tracks_capacity() {
             completed_at_200 = Some(sim.census().completed);
         }
     }
-    assert_eq!(sim.census().completed, count as u64, "not all vehicles finished by t={:.0}", sim.time());
+    assert_eq!(
+        sim.census().completed,
+        count as u64,
+        "not all vehicles finished by t={:.0}",
+        sim.time()
+    );
     for vehicle in sim.vehicles() {
         let arrive = vehicle.arrive_s.expect("arrival");
         if vehicle.id > 0 && arrive + 1e-6 < previous_arrive {
@@ -461,7 +524,11 @@ fn diagram_peaks_at_capacity_and_the_queue_sending_flow_departs_from_the_congest
         let flow = equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, density);
         assert!(flow.is_finite() && flow >= -1e-12);
         assert!(flow <= capacity + 1e-8);
-        let queue_sending = if density <= 0.0 { 0.0 } else { capacity.min(free * density) };
+        let queue_sending = if density <= 0.0 {
+            0.0
+        } else {
+            capacity.min(free * density)
+        };
         if density > capacity / free {
             fd_rmse += (flow - queue_sending).powi(2);
             samples += 1.0;
@@ -471,8 +538,14 @@ fn diagram_peaks_at_capacity_and_the_queue_sending_flow_departs_from_the_congest
     let critical = capacity / free;
     let peak = equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, critical);
     assert!((peak - capacity).abs() <= 1e-8 * capacity);
-    assert_eq!(equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, 0.0), 0.0);
-    assert_eq!(equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, jam), 0.0);
+    assert_eq!(
+        equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, 0.0),
+        0.0
+    );
+    assert_eq!(
+        equilibrium_flow(DiagramFamily::Triangular, free, capacity, jam, jam),
+        0.0
+    );
     eprintln!(
         "AUDIT test=diagram peak={peak:.6} capacity={capacity:.6} congested_rmse_vs_spatial_queue={fd_rmse:.6} samples={samples:.0}"
     );
@@ -486,8 +559,24 @@ fn bounded_rationality_uses_both_corridors_without_path_flip_flop() {
         node(NodeKind::Gateway, 1_000.0, 0.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &straight(0.0, 600.0), RoadClass::Residential, 1, 10.0, 1),
-        link(NodeId(1), NodeId(2), &straight(600.0, 1_000.0), RoadClass::Residential, 1, 10.0, 2),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &straight(0.0, 600.0),
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &straight(600.0, 1_000.0),
+            RoadClass::Residential,
+            1,
+            10.0,
+            2,
+        ),
         link(
             NodeId(1),
             NodeId(2),
@@ -501,7 +590,10 @@ fn bounded_rationality_uses_both_corridors_without_path_flip_flop() {
     let short = EdgeId(1);
     let long = EdgeId(2);
     assert!(edges[2].length_m > edges[1].length_m + 300.0);
-    let turns = vec![through(NodeId(1), EdgeId(0), short), through(NodeId(1), EdgeId(0), long)];
+    let turns = vec![
+        through(NodeId(1), EdgeId(0), short),
+        through(NodeId(1), EdgeId(0), long),
+    ];
     let network = assemble(nodes, edges, turns, Vec::new());
     let capacity = network.edges[1].capacity_veh_per_s;
     let mut scenario = Scenario::baseline("dta");
@@ -541,7 +633,12 @@ fn bounded_rationality_uses_both_corridors_without_path_flip_flop() {
             shares.push(share);
         }
     }
-    assert_eq!(sim.census().active, 0, "DTA run did not clear, census {:?}", sim.census());
+    assert_eq!(
+        sim.census().active,
+        0,
+        "DTA run did not clear, census {:?}",
+        sim.census()
+    );
     assert_trip_delays(&sim);
     let mut used_short = 0u32;
     let mut used_long = 0u32;
@@ -561,8 +658,15 @@ fn bounded_rationality_uses_both_corridors_without_path_flip_flop() {
         }
     }
     assert!(pinned_on_short, "pinned driver left the habitual corridor");
-    assert!(used_short > 0 && used_long > 0, "short {used_short} long {used_long}");
-    let persistence_pred: Vec<f64> = shares.iter().copied().take(shares.len().saturating_sub(1)).collect();
+    assert!(
+        used_short > 0 && used_long > 0,
+        "short {used_short} long {used_long}"
+    );
+    let persistence_pred: Vec<f64> = shares
+        .iter()
+        .copied()
+        .take(shares.len().saturating_sub(1))
+        .collect();
     let persistence_obs: Vec<f64> = shares.iter().copied().skip(1).collect();
     let theil = theil_u(&persistence_pred, &persistence_obs);
     assert!(flips <= 12, "route-share flips {flips}");
@@ -596,20 +700,27 @@ fn signal_delay_stays_non_negative_across_the_flashing_boundary() {
         let before = sim.time();
         sim.step(DT).expect("signal step");
         assert_step_bounds(&sim);
-        for index in 0..3 {
+        for (index, previous_count) in previous.iter_mut().enumerate() {
             let count = sim.link_vehicles(EdgeId(index as u32)) as i64;
-            let jump = (count - previous[index] as i64).abs();
+            let jump = (count - *previous_count as i64).abs();
             max_jump = max_jump.max(jump);
             if before < 40.0 && sim.time() >= 40.0 {
                 mode_jump = mode_jump.max(jump);
             }
-            previous[index] = count as usize;
+            *previous_count = count as usize;
         }
     }
-    assert_eq!(sim.census().completed, expected, "signal trips did not finish");
+    assert_eq!(
+        sim.census().completed,
+        expected,
+        "signal trips did not finish"
+    );
     assert_eq!(sim.census().active, 0);
     assert_trip_delays(&sim);
-    assert!(max_jump <= storage_cap, "occupancy jump {max_jump} above storage {storage_cap}");
+    assert!(
+        max_jump <= storage_cap,
+        "occupancy jump {max_jump} above storage {storage_cap}"
+    );
     let slot_ceiling = capacity.ceil() as i64 + 4;
     assert!(
         mode_jump <= slot_ceiling,
@@ -632,7 +743,10 @@ fn identical_seeds_are_bit_exact_including_the_parallel_node_path() {
     assert_eq!(sequential, again);
     let parallel = parallel_signature();
     let parallel_again = parallel_signature();
-    assert_eq!(parallel.0, parallel_again.0, "parallel census/totals diverged");
+    assert_eq!(
+        parallel.0, parallel_again.0,
+        "parallel census/totals diverged"
+    );
     assert_eq!(parallel.1, parallel_again.1, "parallel arrivals diverged");
     let mut max_geh = 0.0_f64;
     for (left, right) in parallel.2.iter().zip(&parallel_again.2) {
@@ -648,7 +762,10 @@ fn signal_pair_signature() -> (u64, u64, u64, u64, u64, Vec<u64>, Vec<Vec<u32>>)
     let network = chain(&[400.0, 400.0], RoadClass::Primary, 2, 50.0 / 3.6);
     let mut sim = Simulation::new(network, Scenario::baseline("det"));
     sim.schedule(departures(25, NodeId(0), NodeId(2), 0.0, 2.0));
-    assert!(finish(&mut sim, 25, 1_500.0), "determinism corridor did not clear");
+    assert!(
+        finish(&mut sim, 25, 1_500.0),
+        "determinism corridor did not clear"
+    );
     assert_eq!(sim.census().active, 0);
     signature(&sim)
 }
@@ -690,8 +807,14 @@ fn parallel_signature() -> ((u64, u64, u64), Vec<u64>, Vec<u32>) {
         .iter()
         .map(|vehicle| vehicle.arrive_s.unwrap_or(-1.0).to_bits())
         .collect();
-    let loads: Vec<u32> = (0..count).map(|index| sim.link_vehicles(EdgeId(index as u32)) as u32).collect();
-    ((census.spawned, census.completed, sim.vht_s().to_bits()), arrivals, loads)
+    let loads: Vec<u32> = (0..count)
+        .map(|index| sim.link_vehicles(EdgeId(index as u32)) as u32)
+        .collect();
+    (
+        (census.spawned, census.completed, sim.vht_s().to_bits()),
+        arrivals,
+        loads,
+    )
 }
 
 #[test]
@@ -710,9 +833,13 @@ fn nearby_seeds_move_network_metrics_continuously() {
     let cv_c = std_c / mean_c.max(1e-9);
     assert!(uncongested.iter().all(|value| value.is_finite()));
     assert!(congested.iter().all(|value| value.is_finite()));
-    assert!(cv_u < 0.08, "uncongested cv {cv_u:.4} values {uncongested:?}");
+    assert!(
+        cv_u < 0.08,
+        "uncongested cv {cv_u:.4} values {uncongested:?}"
+    );
     assert!(cv_c < 0.75, "congested cv {cv_c:.4} values {congested:?}");
-    let spread = congested.iter().cloned().fold(0.0_f64, f64::max) / congested.iter().cloned().fold(f64::MAX, f64::min);
+    let spread = congested.iter().cloned().fold(0.0_f64, f64::max)
+        / congested.iter().cloned().fold(f64::MAX, f64::min);
     assert!(spread < 2.5, "congested max/min {spread:.3}");
     let identical = seeded_metric(&network, 7, capacity * 3600.0, 180.0);
     let identical_again = seeded_metric(&network, 7, capacity * 3600.0, 180.0);
@@ -770,7 +897,11 @@ fn saturation_at_two_and_a_half_times_capacity_clears_inside_two_hours() {
         }
     }
     let clear_s = clear_s.expect("network did not clear");
-    assert!(sim.max_density() >= 0.9, "peak density {:.3} never jammed a link", sim.max_density());
+    assert!(
+        sim.max_density() >= 0.9,
+        "peak density {:.3} never jammed a link",
+        sim.max_density()
+    );
     assert_eq!(sim.census().completed, sim.census().spawned);
     assert_eq!(sim.rejected_trips(), 0);
     assert_trip_delays(&sim);
@@ -792,10 +923,42 @@ fn crossing_approaches_clear_after_demand_stops() {
         node(NodeKind::Gateway, 400.0, 400.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (400.0, 0.0)], RoadClass::Residential, 1, 10.0, 1),
-        link(NodeId(1), NodeId(2), &[(400.0, 0.0), (800.0, 0.0)], RoadClass::Residential, 1, 10.0, 2),
-        link(NodeId(3), NodeId(1), &[(400.0, -400.0), (400.0, 0.0)], RoadClass::Residential, 1, 10.0, 3),
-        link(NodeId(1), NodeId(4), &[(400.0, 0.0), (400.0, 400.0)], RoadClass::Residential, 1, 10.0, 4),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(400.0, 0.0), (800.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            2,
+        ),
+        link(
+            NodeId(3),
+            NodeId(1),
+            &[(400.0, -400.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            3,
+        ),
+        link(
+            NodeId(1),
+            NodeId(4),
+            &[(400.0, 0.0), (400.0, 400.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            4,
+        ),
     ];
     let capacity = edges[1].capacity_veh_per_s;
     let turns = vec![
@@ -810,7 +973,13 @@ fn crossing_approaches_clear_after_demand_stops() {
     let rate = 2.5 * capacity;
     let per_approach = (rate * load_s).ceil() as usize;
     let mut trips = departures(per_approach, NodeId(0), NodeId(2), 0.0, 1.0 / rate);
-    trips.extend(departures(per_approach, NodeId(3), NodeId(4), 0.2, 1.0 / rate));
+    trips.extend(departures(
+        per_approach,
+        NodeId(3),
+        NodeId(4),
+        0.2,
+        1.0 / rate,
+    ));
     sim.schedule(trips);
     let mut clear_s = None;
     while sim.time() + 1e-9 < load_s + 7_200.0 {
@@ -838,8 +1007,24 @@ fn severed_corridor_queues_upstream_and_diverts_when_an_exit_exists() {
         node(NodeKind::Gateway, 370.0, 0.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &straight(0.0, 250.0), RoadClass::Residential, 1, 10.0, 1),
-        link(NodeId(1), NodeId(2), &straight(250.0, 370.0), RoadClass::Residential, 1, 10.0, 2),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &straight(0.0, 250.0),
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &straight(250.0, 370.0),
+            RoadClass::Residential,
+            1,
+            10.0,
+            2,
+        ),
         link(
             NodeId(1),
             NodeId(2),
@@ -850,7 +1035,10 @@ fn severed_corridor_queues_upstream_and_diverts_when_an_exit_exists() {
             3,
         ),
     ];
-    assert!(edges[1].length_m < 300.0, "the closure must sit inside the usual inertia gate");
+    assert!(
+        edges[1].length_m < 300.0,
+        "the closure must sit inside the usual inertia gate"
+    );
     let turns = vec![
         through(NodeId(1), EdgeId(0), EdgeId(1)),
         through(NodeId(1), EdgeId(0), EdgeId(2)),
@@ -880,8 +1068,14 @@ fn severed_corridor_queues_upstream_and_diverts_when_an_exit_exists() {
         open.link_vehicles(EdgeId(2)),
     );
     assert_eq!(open.link_vehicles(EdgeId(1)), 0);
-    assert!(open.vehicles().iter().all(|vehicle| !vehicle.path.contains(&EdgeId(1))));
-    assert!(open.vehicles().iter().any(|vehicle| vehicle.path.contains(&EdgeId(2))));
+    assert!(open
+        .vehicles()
+        .iter()
+        .all(|vehicle| !vehicle.path.contains(&EdgeId(1))));
+    assert!(open
+        .vehicles()
+        .iter()
+        .any(|vehicle| vehicle.path.contains(&EdgeId(2))));
     assert_trip_delays(&open);
 
     let mut forced = Scenario::baseline("already-closed");
@@ -894,7 +1088,10 @@ fn severed_corridor_queues_upstream_and_diverts_when_an_exit_exists() {
     held.advance(30.0, DT).expect("closure from the start");
     assert_step_bounds(&held);
     assert_eq!(held.link_vehicles(EdgeId(1)), 0);
-    assert!(held.vehicles().iter().all(|vehicle| vehicle.path.first() != Some(&EdgeId(1))));
+    assert!(held
+        .vehicles()
+        .iter()
+        .all(|vehicle| vehicle.path.first() != Some(&EdgeId(1))));
 
     let only = chain(&[200.0], RoadClass::Residential, 1, 10.0);
     let mut trapped = Scenario::baseline("only-path");
@@ -904,11 +1101,17 @@ fn severed_corridor_queues_upstream_and_diverts_when_an_exit_exists() {
     });
     let mut queued = Simulation::new(only, trapped);
     queued.schedule(departures(5, NodeId(0), NodeId(1), 0.0, 0.0));
-    queued.advance(20.0, DT).expect("zero and negative scale must not panic");
+    queued
+        .advance(20.0, DT)
+        .expect("zero and negative scale must not panic");
     assert_step_bounds(&queued);
     assert_eq!(queued.census().completed, 0);
     assert_eq!(queued.census().active, 5);
-    assert_eq!(queued.link_vehicles(EdgeId(0)), 0, "negative scale is a closure, not a crash");
+    assert_eq!(
+        queued.link_vehicles(EdgeId(0)),
+        0,
+        "negative scale is a closure, not a crash"
+    );
     queued.scenario_mut().edge_capacity_scale.clear();
     assert!(finish(&mut queued, 5, 400.0));
     eprintln!(
@@ -927,7 +1130,10 @@ fn fixed_cycle_and_flashing_amber_do_not_invent_negative_delay() {
     let fixed_delay = run_mean_delay(network.clone(), fixed, &trips);
     let flashing_delay = run_mean_delay(network, flashing, &trips);
     assert!(fixed_delay >= -1e-6 && flashing_delay >= -1e-6);
-    assert!(flashing_delay < fixed_delay, "flashing {flashing_delay:.3} fixed {fixed_delay:.3}");
+    assert!(
+        flashing_delay < fixed_delay,
+        "flashing {flashing_delay:.3} fixed {fixed_delay:.3}"
+    );
     eprintln!(
         "AUDIT test=signal_modes fixed_delay_s={fixed_delay:.4} flashing_delay_s={flashing_delay:.4} gap_s={gap:.4}",
         gap = fixed_delay - flashing_delay
@@ -938,9 +1144,33 @@ fn signal_approaches() -> Network {
     let mut center = node(NodeKind::Signalized, 400.0, 0.0);
     center.signal = Some(SignalId(0));
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (400.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 1),
-        link(NodeId(1), NodeId(2), &[(400.0, 0.0), (800.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 2),
-        link(NodeId(3), NodeId(1), &[(400.0, -200.0), (400.0, 0.0)], RoadClass::Residential, 1, 30.0 / 3.6, 3),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (400.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(400.0, 0.0), (800.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            2,
+        ),
+        link(
+            NodeId(3),
+            NodeId(1),
+            &[(400.0, -200.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            30.0 / 3.6,
+            3,
+        ),
     ];
     let east = edges[0].bearings().expect("bearing").1;
     let north = edges[2].bearings().expect("bearing").1;
@@ -978,7 +1208,11 @@ fn signal_approaches() -> Network {
 fn run_mean_delay(network: Network, scenario: Scenario, trips: &[Trip]) -> f64 {
     let mut sim = Simulation::new(network, scenario);
     sim.schedule(trips.iter().cloned());
-    assert!(finish(&mut sim, trips.len() as u64, 2_500.0), "mode run census {:?}", sim.census());
+    assert!(
+        finish(&mut sim, trips.len() as u64, 2_500.0),
+        "mode run census {:?}",
+        sim.census()
+    );
     assert_trip_delays(&sim);
     let mut sum = 0.0;
     for vehicle in sim.vehicles() {
@@ -1056,7 +1290,8 @@ fn thessaloniki_sample_conserves_mass_and_repeats() {
     let mut sim = Simulation::new(network.clone(), closed);
     sim.schedule(trips.iter().take(12).cloned());
     for _ in 0..60 {
-        sim.step(DT).expect("a zero-capacity city link must not panic");
+        sim.step(DT)
+            .expect("a zero-capacity city link must not panic");
         assert_step_bounds(&sim);
     }
     let census = sim.census();
@@ -1072,7 +1307,9 @@ fn thessaloniki_sample_conserves_mass_and_repeats() {
     );
 }
 
-fn run_city(network: &Network, scenario: &Scenario, trips: &[Trip], steps: u32) -> ((u64, u64, u64), Vec<u64>, Vec<f64>, u64, u64) {
+type CitySample = ((u64, u64, u64), Vec<u64>, Vec<f64>, u64, u64);
+
+fn run_city(network: &Network, scenario: &Scenario, trips: &[Trip], steps: u32) -> CitySample {
     let mut sim = Simulation::new(network.clone(), scenario.clone());
     sim.schedule(trips.iter().cloned());
     for _ in 0..steps {

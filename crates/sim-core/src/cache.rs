@@ -17,7 +17,8 @@ pub fn store_network(path: &Path, network: &Network) -> Result<(), CoreError> {
             })?;
         }
     }
-    let payload = bincode::serialize(network).map_err(|error| CoreError::CachePayload(error.to_string()))?;
+    let payload =
+        bincode::serialize(network).map_err(|error| CoreError::CachePayload(error.to_string()))?;
     let mut bytes = Vec::with_capacity(8 + payload.len());
     bytes.extend_from_slice(CACHE_MAGIC);
     bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -39,10 +40,11 @@ pub fn load_network(path: &Path) -> Result<Network, CoreError> {
         source,
     })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|source| CoreError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
+    file.read_to_end(&mut bytes)
+        .map_err(|source| CoreError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
     if bytes.len() < 8 || &bytes[0..4] != CACHE_MAGIC {
         return Err(CoreError::CacheMagic);
     }
@@ -54,7 +56,8 @@ pub fn load_network(path: &Path) -> Result<Network, CoreError> {
             expected: FORMAT_VERSION,
         });
     }
-    let network: Network = bincode::deserialize(&bytes[8..]).map_err(|error| CoreError::CachePayload(error.to_string()))?;
+    let network: Network = bincode::deserialize(&bytes[8..])
+        .map_err(|error| CoreError::CachePayload(error.to_string()))?;
     network.validate()?;
     Ok(network)
 }

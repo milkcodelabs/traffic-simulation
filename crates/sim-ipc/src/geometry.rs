@@ -27,8 +27,8 @@ pub fn encode_viewport(network: &Network) -> Vec<u8> {
 mod tests {
     use super::*;
     use sim_core::{
-        AssembleInput, BBox, DiagramFamily, EdgeDraft, EdgeFlags, Node, NodeKind, RoadClass, UtmProjection,
-        DEFAULT_HEAVY_VEHICLE_SHARE,
+        AssembleInput, BBox, DiagramFamily, EdgeDraft, EdgeFlags, Node, NodeKind, RoadClass,
+        UtmProjection, DEFAULT_HEAVY_VEHICLE_SHARE,
     };
 
     #[test]
@@ -90,7 +90,10 @@ mod tests {
         })
         .unwrap();
         let bytes = encode_viewport(&network);
-        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), VIEWPORT_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            VIEWPORT_MAGIC
+        );
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
         assert_eq!(bytes[12], RoadClass::Primary.as_u8());
         assert_eq!(bytes[13], 2);

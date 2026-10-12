@@ -1,0 +1,11 @@
+{
+  "name": "thessaloniki-baseline",
+  "signalSchedule": "forceFixed",
+  "nightFlashing": null,
+  "edgeCapacityScale": [],
+  "edgeSpeedScale": [],
+  "zoneDemandScale": [],
+  "globalSpeedScale": 1.0,
+  "globalDemandScale": 1.0,
+  "routeInertia": 1.4
+}

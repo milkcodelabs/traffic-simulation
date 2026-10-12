@@ -4,12 +4,14 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 use sim_core::{
-    scaled_capacity, scaled_speed, storage_inflow_ceiling, EdgeId, LinkTransmissionState, Network, NodeId, Scenario,
-    SignalController, SignalMode, TAU_YIELD_S,
+    scaled_capacity, scaled_speed, storage_inflow_ceiling, EdgeId, LinkTransmissionState, Network,
+    NodeId, Scenario, SignalController, SignalMode, TAU_YIELD_S,
 };
 use thiserror::Error;
 
-use crate::route::{experienced_weights, free_flow_weights, path_cost, shortest_path, should_reroute};
+use crate::route::{
+    experienced_weights, free_flow_weights, path_cost, shortest_path, should_reroute,
+};
 
 /// One trip released by the caller. This is not a synthetic origin-destination matrix.
 #[derive(Clone, Debug)]
@@ -74,11 +76,23 @@ pub enum EngineError {
     #[error("time step must be positive")]
     BadStep,
     #[error("conservation failed: spawned {spawned} != active {active} + completed {completed}")]
-    Conservation { spawned: u64, active: u64, completed: u64 },
+    Conservation {
+        spawned: u64,
+        active: u64,
+        completed: u64,
+    },
     #[error("edge {edge} queue holds {queued} vehicles but the cumulative counts say {counted}")]
-    LinkMismatch { edge: u32, queued: usize, counted: f64 },
+    LinkMismatch {
+        edge: u32,
+        queued: usize,
+        counted: f64,
+    },
     #[error("edge {edge} holds {queued} vehicles above its storage {storage}")]
-    Storage { edge: u32, queued: usize, storage: f64 },
+    Storage {
+        edge: u32,
+        queued: usize,
+        storage: f64,
+    },
     #[error("{what} became non-finite")]
     NonFinite { what: &'static str },
 }
@@ -374,7 +388,9 @@ impl Simulation {
             clock_origin_s: snap.clock_origin_s,
             time_s: snap.time_s,
             links: snap.links,
-            queues: LinkQueues { queues: snap.queues },
+            queues: LinkQueues {
+                queues: snap.queues,
+            },
             discharge_credit: snap.discharge_credit,
             free_flow: snap.free_flow,
             vehicles: snap.vehicles,
@@ -454,7 +470,12 @@ impl Simulation {
 
     pub fn free_flow_mps(&self, index: usize) -> f64 {
         let travel = self.free_flow.get(index).copied().unwrap_or(f64::INFINITY);
-        let length = self.network.edges.get(index).map(|edge| edge.length_m).unwrap_or(0.0);
+        let length = self
+            .network
+            .edges
+            .get(index)
+            .map(|edge| edge.length_m)
+            .unwrap_or(0.0);
         if travel.is_finite() && travel > 1e-9 {
             length / travel
         } else {
@@ -493,7 +514,11 @@ impl Simulation {
                 let distance = self.edge_distance_m[index];
                 EdgeObservation {
                     delay_s: self.edge_delay_s[index],
-                    mean_speed_mps: if *travel > 1e-9 { distance / travel } else { f64::NAN },
+                    mean_speed_mps: if *travel > 1e-9 {
+                        distance / travel
+                    } else {
+                        f64::NAN
+                    },
                 }
             })
             .collect()
@@ -566,7 +591,12 @@ impl Simulation {
     /// Per-edge drawing fields. `speed_ratio` is `v / v_free` in `[0, 1]`. `density_ratio` is
     /// `N / S_max`. `queue_veh` counts vehicles that have already spent their free-flow time
     /// and are waiting to discharge.
-    pub fn write_link_fields(&self, speed_ratio: &mut [f32], density_ratio: &mut [f32], queue_veh: &mut [f32]) {
+    pub fn write_link_fields(
+        &self,
+        speed_ratio: &mut [f32],
+        density_ratio: &mut [f32],
+        queue_veh: &mut [f32],
+    ) {
         let count = self
             .network
             .edges
@@ -586,7 +616,11 @@ impl Simulation {
         let edge = &self.network.edges[index];
         let count = self.queues.queues[index].len();
         let travel = self.free_flow[index];
-        let capacity = scaled_capacity(edge.capacity_veh_per_s, EdgeId(index as u32), &self.scenario);
+        let capacity = scaled_capacity(
+            edge.capacity_veh_per_s,
+            EdgeId(index as u32),
+            &self.scenario,
+        );
         let ratio = if count == 0 {
             1.0
         } else if !travel.is_finite() || travel <= 1e-12 {
@@ -659,7 +693,8 @@ impl Simulation {
 
     pub fn schedule(&mut self, trips: impl IntoIterator<Item = Trip>) {
         self.pending.extend(trips);
-        self.pending.sort_by(|left, right| left.depart_s.total_cmp(&right.depart_s));
+        self.pending
+            .sort_by(|left, right| left.depart_s.total_cmp(&right.depart_s));
     }
 
     pub fn advance(&mut self, horizon_s: f64, dt: f64) -> Result<(), EngineError> {
@@ -685,7 +720,7 @@ impl Simulation {
         let trip_due = self.pending.first().is_some_and(|trip| trip.depart_s <= t1);
         if !trip_due && self.spawned == self.completed {
             self.time_s = t1;
-            self.record_profile(0, 0, 0, 0, 0, 0, 0, false);
+            self.record_profile(ProfileAdd::idle());
             return Ok(());
         }
         let clock = Instant::now();
@@ -698,21 +733,37 @@ impl Simulation {
         if self.busy_ids.is_empty() {
             self.time_s = t1;
             self.vht_s += active_during * dt;
-            self.record_profile(routing_ns, 0, link_ns, 0, 0, 0, 0, false);
+            self.record_profile(ProfileAdd {
+                routing_ns,
+                link_ns,
+                ..ProfileAdd::idle()
+            });
             return Ok(());
         }
         let nodes = self.busy_ids.clone();
         let clock = Instant::now();
         let proposals: Vec<NodeProposal> = if nodes.len() < 64 {
-            nodes.iter().map(|node| self.propose(*node as usize, dt, t1)).collect()
+            nodes
+                .iter()
+                .map(|node| self.propose(*node as usize, dt, t1))
+                .collect()
         } else {
-            nodes.par_iter().map(|node| self.propose(*node as usize, dt, t1)).collect()
+            nodes
+                .par_iter()
+                .map(|node| self.propose(*node as usize, dt, t1))
+                .collect()
         };
         let propose_ns = clock.elapsed().as_nanos();
         let route_ns: u128 = proposals.iter().map(|proposal| proposal.route_ns).sum();
         let signal_ns: u128 = proposals.iter().map(|proposal| proposal.signal_ns).sum();
-        self.route_searches += proposals.iter().map(|proposal| u64::from(proposal.searches)).sum::<u64>();
-        self.reroute_searches += proposals.iter().map(|proposal| u64::from(proposal.reroutes)).sum::<u64>();
+        self.route_searches += proposals
+            .iter()
+            .map(|proposal| u64::from(proposal.searches))
+            .sum::<u64>();
+        self.reroute_searches += proposals
+            .iter()
+            .map(|proposal| u64::from(proposal.reroutes))
+            .sum::<u64>();
         routing_ns += route_ns;
         link_ns += propose_ns.saturating_sub(route_ns.saturating_add(signal_ns));
         let clock = Instant::now();
@@ -725,16 +776,16 @@ impl Simulation {
         let result = self.audit();
         self.note_saturation();
         let recording_ns = clock.elapsed().as_nanos();
-        self.record_profile(
+        self.record_profile(ProfileAdd {
             routing_ns,
-            0,
             link_ns,
-            signal_ns,
+            signals_ns: signal_ns,
             recording_ns,
             apply_ns,
-            nodes.len() as u32,
-            true,
-        );
+            busy_nodes: nodes.len() as u32,
+            busy: true,
+            ..ProfileAdd::idle()
+        });
         result
     }
 
@@ -881,48 +932,42 @@ impl Simulation {
         }
     }
 
-    fn record_profile(
-        &mut self,
-        routing_ns: u128,
-        weights_ns: u128,
-        link_ns: u128,
-        signals_ns: u128,
-        recording_ns: u128,
-        apply_ns: u128,
-        busy_nodes: u32,
-        busy: bool,
-    ) {
+    fn record_profile(&mut self, sample: ProfileAdd) {
         let profile = &mut self.step_profile;
-        profile.routing_ns += routing_ns;
-        profile.weights_ns += weights_ns;
-        profile.link_ns += link_ns;
-        profile.apply_ns += apply_ns;
-        profile.signals_ns += signals_ns;
-        profile.recording_ns += recording_ns;
+        profile.routing_ns += sample.routing_ns;
+        profile.weights_ns += sample.weights_ns;
+        profile.link_ns += sample.link_ns;
+        profile.apply_ns += sample.apply_ns;
+        profile.signals_ns += sample.signals_ns;
+        profile.recording_ns += sample.recording_ns;
         profile.ticks += 1;
-        if busy {
+        if sample.busy {
             profile.busy_ticks += 1;
-            profile.busy_node_visits += u64::from(busy_nodes);
+            profile.busy_node_visits += u64::from(sample.busy_nodes);
         }
         if profile.quiet || profile.printed || profile.ticks < 1000 {
             return;
         }
         profile.printed = true;
-        let total = profile.routing_ns + profile.link_ns + profile.signals_ns + profile.recording_ns;
-        let seconds = total as f64 / 1e9;
-        let rate = 1000.0 / seconds.max(1e-9);
-        let search_ns = profile.routing_ns.saturating_sub(profile.weights_ns);
-        eprintln!(
-            "profile 1000 ticks in {seconds:.3}s  {rate:.1} ticks/s  busy {busy}\n  time_routing {routing:.3}s  (weights {weights:.3}s  searches {search:.3}s)\n  time_link_dynamics {link:.3}s  (apply {apply:.3}s)\n  time_signals {signals:.3}s\n  time_recording {recording:.3}s",
-            busy = profile.busy_ticks,
-            routing = profile.routing_ns as f64 / 1e9,
-            weights = profile.weights_ns as f64 / 1e9,
-            search = search_ns as f64 / 1e9,
-            link = profile.link_ns as f64 / 1e9,
-            apply = profile.apply_ns as f64 / 1e9,
-            signals = profile.signals_ns as f64 / 1e9,
-            recording = profile.recording_ns as f64 / 1e9,
-        );
+        #[cfg(debug_assertions)]
+        {
+            let total =
+                profile.routing_ns + profile.link_ns + profile.signals_ns + profile.recording_ns;
+            let seconds = total as f64 / 1e9;
+            let rate = 1000.0 / seconds.max(1e-9);
+            let search_ns = profile.routing_ns.saturating_sub(profile.weights_ns);
+            eprintln!(
+                "profile 1000 ticks in {seconds:.3}s  {rate:.1} ticks/s  busy {busy}\n  time_routing {routing:.3}s  (weights {weights:.3}s  searches {search:.3}s)\n  time_link_dynamics {link:.3}s  (apply {apply:.3}s)\n  time_signals {signals:.3}s\n  time_recording {recording:.3}s",
+                busy = profile.busy_ticks,
+                routing = profile.routing_ns as f64 / 1e9,
+                weights = profile.weights_ns as f64 / 1e9,
+                search = search_ns as f64 / 1e9,
+                link = profile.link_ns as f64 / 1e9,
+                apply = profile.apply_ns as f64 / 1e9,
+                signals = profile.signals_ns as f64 / 1e9,
+                recording = profile.recording_ns as f64 / 1e9,
+            );
+        }
     }
 
     /// A node is busy only when a vehicle can enter or leave it during this step.
@@ -1017,7 +1062,11 @@ impl Simulation {
 
     fn edge_room(&self, index: usize) -> u32 {
         let edge = &self.network.edges[index];
-        let capacity = scaled_capacity(edge.capacity_veh_per_s, EdgeId(index as u32), &self.scenario);
+        let capacity = scaled_capacity(
+            edge.capacity_veh_per_s,
+            EdgeId(index as u32),
+            &self.scenario,
+        );
         if capacity <= 1e-12 {
             return 0;
         }
@@ -1065,7 +1114,10 @@ impl Simulation {
             return NodeControl::Priority;
         };
         let signal = &self.network.signals[signal_id.index()];
-        match self.scenario.forced_mode(self.scheduled_mode_at(signal, time_s)) {
+        match self
+            .scenario
+            .forced_mode(self.scheduled_mode_at(signal, time_s))
+        {
             SignalMode::FixedCycle => NodeControl::Fixed,
             SignalMode::FlashingAmber | SignalMode::Off => NodeControl::Priority,
         }
@@ -1093,9 +1145,15 @@ impl Simulation {
                 path
             } else {
                 self.route_searches += 1;
-                let Some((path, _)) = shortest_path(&self.network, &self.free_flow, trip.origin, trip.destination) else {
+                let Some((path, _)) = shortest_path(
+                    &self.network,
+                    &self.free_flow,
+                    trip.origin,
+                    trip.destination,
+                ) else {
                     self.rejected_trips += 1;
-                    if self.rejected_trips <= 12 || self.rejected_trips % 1000 == 0 {
+                    #[cfg(debug_assertions)]
+                    if self.rejected_trips <= 12 || self.rejected_trips.is_multiple_of(1000) {
                         eprintln!(
                             "rejected unroutable departure {:.0}s {} -> {} ({} so far)",
                             trip.depart_s, trip.origin.0, trip.destination.0, self.rejected_trips
@@ -1156,7 +1214,11 @@ impl Simulation {
         for edge in incoming {
             let clock = Instant::now();
             let open = self.approach_open(edge, major_conflict);
-            let capacity = scaled_capacity(self.network.edges[edge.index()].capacity_veh_per_s, edge, &self.scenario);
+            let capacity = scaled_capacity(
+                self.network.edges[edge.index()].capacity_veh_per_s,
+                edge,
+                &self.scenario,
+            );
             let settled = self.credit_settled(edge.index(), self.time_s);
             let (slots, credit) = discharge_slots(open, capacity, settled, dt);
             proposal.signal_ns += clock.elapsed().as_nanos();
@@ -1210,7 +1272,9 @@ impl Simulation {
                     let held = self.queues.queues[edge.index()]
                         .iter()
                         .skip(position)
-                        .filter(|id| self.ready_time(&self.vehicles[**id as usize], edge, node) <= t1)
+                        .filter(|id| {
+                            self.ready_time(&self.vehicles[**id as usize], edge, node) <= t1
+                        })
                         .count() as u32;
                     proposal.demand.push((next.index(), held));
                 }
@@ -1232,7 +1296,13 @@ impl Simulation {
         }
     }
 
-    fn drain_origin(&self, node: NodeId, t1: f64, room: &mut LocalRoom, proposal: &mut NodeProposal) {
+    fn drain_origin(
+        &self,
+        node: NodeId,
+        t1: f64,
+        room: &mut LocalRoom,
+        proposal: &mut NodeProposal,
+    ) {
         let waiting = &self.waiting[node.index()];
         if waiting.is_empty() {
             return;
@@ -1251,8 +1321,16 @@ impl Simulation {
             if plan.searched {
                 proposal.route_checks.push(vehicle.id);
             }
-            if !plan.path.is_empty() && (vehicle.path.is_empty() || self.network.edges[vehicle.path[0].index()].from != node) {
-                proposal.kept_paths.push((vehicle.id, plan.path.clone(), plan.baseline_s, plan.habitual_s));
+            if !plan.path.is_empty()
+                && (vehicle.path.is_empty()
+                    || self.network.edges[vehicle.path[0].index()].from != node)
+            {
+                proposal.kept_paths.push((
+                    vehicle.id,
+                    plan.path.clone(),
+                    plan.baseline_s,
+                    plan.habitual_s,
+                ));
             }
             plans.push(Some(plan));
         }
@@ -1315,7 +1393,11 @@ impl Simulation {
         }
         if self.route_due(vehicle)
             && self.may_reroute(node, &path, 0)
-            && should_reroute(path_cost(&path, &self.experienced), path_cost(&path, &self.free_flow), vehicle.inertia)
+            && should_reroute(
+                path_cost(&path, &self.experienced),
+                path_cost(&path, &self.free_flow),
+                vehicle.inertia,
+            )
         {
             searched = true;
             searches += 1;
@@ -1395,13 +1477,15 @@ impl Simulation {
         let mut reroutes = 0u32;
         let mut route_ns = 0u128;
         if self.route_due(vehicle) && self.may_reroute(node, &path, suffix_start) {
-            let experienced_cost = path_cost(&path[suffix_start.min(path.len())..], &self.experienced);
+            let experienced_cost =
+                path_cost(&path[suffix_start.min(path.len())..], &self.experienced);
             if should_reroute(experienced_cost, baseline, vehicle.inertia) {
                 searched = true;
                 searches += 1;
                 reroutes += 1;
                 let clock = Instant::now();
-                let found = shortest_path(&self.network, &self.experienced, node, vehicle.destination);
+                let found =
+                    shortest_path(&self.network, &self.experienced, node, vehicle.destination);
                 route_ns += clock.elapsed().as_nanos();
                 if let Some((replacement, _)) = found {
                     let old_next = path.get(suffix_start).copied();
@@ -1462,7 +1546,8 @@ impl Simulation {
                 }
                 self.refresh_weight(edge_index);
                 self.links.cumulative_out[edge_index] += 1.0;
-                let spent = (departure.at - self.vehicles[departure.vehicle as usize].enter_s).max(0.0);
+                let spent =
+                    (departure.at - self.vehicles[departure.vehicle as usize].enter_s).max(0.0);
                 let travel = self.free_flow[edge_index];
                 let length = self.network.edges[edge_index].length_m;
                 if travel.is_finite() {
@@ -1480,7 +1565,12 @@ impl Simulation {
                         vehicle.arrive_s = Some(departure.at);
                         self.completed += 1;
                     }
-                    MoveKind::Transfer { path, cursor, baseline_s, .. } => {
+                    MoveKind::Transfer {
+                        path,
+                        cursor,
+                        baseline_s,
+                        ..
+                    } => {
                         vehicle.path.clone_from(path);
                         vehicle.cursor = *cursor;
                         vehicle.baseline_s = *baseline_s;
@@ -1534,14 +1624,19 @@ impl Simulation {
                 }
             }
         }
-        if proposals.iter().any(|proposal| !proposal.departures.is_empty() || !proposal.entries.is_empty()) {
+        if proposals
+            .iter()
+            .any(|proposal| !proposal.departures.is_empty() || !proposal.entries.is_empty())
+        {
             self.appearance = self.appearance.wrapping_add(1);
         }
     }
 
     fn audit(&mut self) -> Result<(), EngineError> {
         if !self.vht_s.is_finite() || !self.vkt_m.is_finite() || !self.delay_s.is_finite() {
-            return Err(EngineError::NonFinite { what: "network totals" });
+            return Err(EngineError::NonFinite {
+                what: "network totals",
+            });
         }
         let census = self.census();
         if census.spawned != census.active + census.completed {
@@ -1584,7 +1679,9 @@ impl Simulation {
             });
         }
         if !self.discharge_credit[index].is_finite() {
-            return Err(EngineError::NonFinite { what: "discharge credit" });
+            return Err(EngineError::NonFinite {
+                what: "discharge credit",
+            });
         }
         Ok(())
     }
@@ -1596,7 +1693,11 @@ impl Simulation {
             return 0;
         }
         let horizon = self.time_s + f64::from(seconds);
-        if self.pending.first().is_some_and(|trip| trip.depart_s <= horizon + 1e-9) {
+        if self
+            .pending
+            .first()
+            .is_some_and(|trip| trip.depart_s <= horizon + 1e-9)
+        {
             return 0;
         }
         self.time_s = horizon;
@@ -1610,7 +1711,11 @@ impl Simulation {
         if max_seconds == 0 {
             return 0;
         }
-        let next_trip = self.pending.first().map(|trip| trip.depart_s).unwrap_or(f64::INFINITY);
+        let next_trip = self
+            .pending
+            .first()
+            .map(|trip| trip.depart_s)
+            .unwrap_or(f64::INFINITY);
         let next_ready = self.next_ready_s();
         let horizon = self.time_s + f64::from(max_seconds);
         let stop = next_trip.min(next_ready).min(horizon);
@@ -1699,7 +1804,10 @@ impl Simulation {
             return true;
         };
         let signal = &self.network.signals[signal_id.index()];
-        let listed = signal.phases.iter().any(|phase| phase.incoming.contains(&edge));
+        let listed = signal
+            .phases
+            .iter()
+            .any(|phase| phase.incoming.contains(&edge));
         if !listed || signal.cycle_length_s <= 0.0 || signal.phases.is_empty() {
             return true;
         }
@@ -1720,9 +1828,11 @@ impl Simulation {
         if !matches!(self.node_mode(node), NodeControl::Priority) {
             return false;
         }
-        self.network.adjacency.incoming(node).iter().any(|edge| {
-            self.is_major(node, *edge) && self.front_ready(*edge, node, t1, false)
-        })
+        self.network
+            .adjacency
+            .incoming(node)
+            .iter()
+            .any(|edge| self.is_major(node, *edge) && self.front_ready(*edge, node, t1, false))
     }
 
     fn front_ready(&self, edge: EdgeId, node: NodeId, t1: f64, minor: bool) -> bool {
@@ -1841,9 +1951,39 @@ enum NodeControl {
     Priority,
 }
 
+struct ProfileAdd {
+    routing_ns: u128,
+    weights_ns: u128,
+    link_ns: u128,
+    signals_ns: u128,
+    recording_ns: u128,
+    apply_ns: u128,
+    busy_nodes: u32,
+    busy: bool,
+}
+
+impl ProfileAdd {
+    fn idle() -> Self {
+        Self {
+            routing_ns: 0,
+            weights_ns: 0,
+            link_ns: 0,
+            signals_ns: 0,
+            recording_ns: 0,
+            apply_ns: 0,
+            busy_nodes: 0,
+            busy: false,
+        }
+    }
+}
+
 fn discharge_slots(open: bool, capacity: f64, credit: f64, dt: f64) -> (u32, f64) {
-    let credit = if credit.is_finite() && credit >= 0.0 { credit } else { 0.0 };
-    if !open || !(capacity > 0.0) || !(dt > 0.0) || !capacity.is_finite() || !dt.is_finite() {
+    let credit = if credit.is_finite() && credit >= 0.0 {
+        credit
+    } else {
+        0.0
+    };
+    if !open || capacity <= 0.0 || dt <= 0.0 || !capacity.is_finite() || !dt.is_finite() {
         return (0, credit);
     }
     let offered = credit + capacity * dt;

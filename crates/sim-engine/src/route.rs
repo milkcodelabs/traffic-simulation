@@ -31,7 +31,11 @@ pub fn free_flow_weights(network: &Network, scenario: &Scenario) -> Vec<f64> {
 /// Instantaneous traversal cost. An empty open link costs its free-flow time.
 /// A queue costs the discharge time of the vehicles already on it when that is longer.
 /// A closed link (`q = 0`) is not a finite route.
-pub fn experienced_weights(network: &Network, scenario: &Scenario, queues: &LinkQueues) -> Vec<f64> {
+pub fn experienced_weights(
+    network: &Network,
+    scenario: &Scenario,
+    queues: &LinkQueues,
+) -> Vec<f64> {
     let (capacity_factor, speed_factor) = scale_factors(scenario, network.edges.len());
     network
         .edges
@@ -58,7 +62,12 @@ pub fn path_cost(path: &[EdgeId], weights: &[f64]) -> f64 {
 /// pushed more than once; a popped entry whose cost is worse than the recorded
 /// distance is discarded immediately. Distances live in a thread-local scratchpad
 /// stamped by an epoch, so a search does not allocate or clear those arrays.
-pub fn shortest_path(network: &Network, weights: &[f64], from: NodeId, to: NodeId) -> Option<(Vec<EdgeId>, f64)> {
+pub fn shortest_path(
+    network: &Network,
+    weights: &[f64],
+    from: NodeId,
+    to: NodeId,
+) -> Option<(Vec<EdgeId>, f64)> {
     if from == to {
         return Some((Vec::new(), 0.0));
     }
@@ -132,7 +141,10 @@ fn explore(network: &Network, weights: &[f64], from: NodeId, goal: Option<usize>
         touch(scratch, from.index(), stamp);
         scratch.dist[from.index()] = 0.0;
         scratch.prev_edge[from.index()] = u32::MAX;
-        scratch.heap.push(HeapItem { cost: 0.0, node: from.0 });
+        scratch.heap.push(HeapItem {
+            cost: 0.0,
+            node: from.0,
+        });
         while let Some(item) = scratch.heap.pop() {
             let index = item.node as usize;
             if item.cost > scratch.dist[index] {
@@ -173,7 +185,14 @@ fn touch(scratch: &mut Scratch, node: usize, stamp: u32) {
 }
 
 #[inline(always)]
-fn relax(scratch: &mut Scratch, weights: &[f64], stamp: u32, travelled: f64, from: u32, edge_id: u32) {
+fn relax(
+    scratch: &mut Scratch,
+    weights: &[f64],
+    stamp: u32,
+    travelled: f64,
+    from: u32,
+    edge_id: u32,
+) {
     let edge_index = edge_id as usize;
     let weight = weights[edge_index];
     if !weight.is_finite() {
@@ -321,7 +340,7 @@ pub fn local_router_scratch_bytes() -> u64 {
 }
 
 thread_local! {
-    static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch {
+    static SCRATCH: RefCell<Scratch> = const { RefCell::new(Scratch {
         dist: Vec::new(),
         prev_edge: Vec::new(),
         prev_node: Vec::new(),
@@ -334,7 +353,7 @@ thread_local! {
         degree: Vec::new(),
         turn_offset: Vec::new(),
         turn_next: Vec::new(),
-    });
+    }) };
 }
 
 #[cfg(test)]
@@ -379,7 +398,8 @@ mod tests {
         }
         let destination = destination.expect("a long free-flow path");
         let started = Instant::now();
-        let (path, cost) = shortest_path(&network, &weights, from, destination).expect("repeat search");
+        let (path, cost) =
+            shortest_path(&network, &weights, from, destination).expect("repeat search");
         let elapsed = started.elapsed();
         eprintln!(
             "thessaloniki search  {} edges  {:.1} s  {:.3} ms",
@@ -410,7 +430,11 @@ mod tests {
         let network = sim_core::load_network(cache).expect("load cache");
         let scenario = sim_core::Scenario::baseline("component");
         let boundary = crate::demand::boundary_demand(&network, &scenario);
-        assert!(boundary.giant_nodes > 10_000, "giant component {}", boundary.giant_nodes);
+        assert!(
+            boundary.giant_nodes > 10_000,
+            "giant component {}",
+            boundary.giant_nodes
+        );
         assert!(!boundary.origins.is_empty());
         assert!(!boundary.destinations.is_empty());
         let weights = free_flow_weights(&network, &scenario);
@@ -423,8 +447,12 @@ mod tests {
                     assert!(shortest_path(&network, &weights, *origin, *destination).is_none());
                     continue;
                 }
-                let (path, cost) = shortest_path(&network, &weights, *origin, *destination).expect("routable pair");
-                assert_eq!(network.edges[path.last().expect("edge").index()].to, *destination);
+                let (path, cost) = shortest_path(&network, &weights, *origin, *destination)
+                    .expect("routable pair");
+                assert_eq!(
+                    network.edges[path.last().expect("edge").index()].to,
+                    *destination
+                );
                 for pair in path.windows(2) {
                     let node = network.edges[pair[0].index()].to;
                     let legal = network.turns_at(node).iter().any(|turn| {
@@ -432,7 +460,10 @@ mod tests {
                     });
                     assert!(legal, "illegal turn at {}", node.0);
                 }
-                let metres: f64 = path.iter().map(|edge| network.edges[edge.index()].length_m).sum();
+                let metres: f64 = path
+                    .iter()
+                    .map(|edge| network.edges[edge.index()].length_m)
+                    .sum();
                 kilometres += metres / 1000.0;
                 hours += cost / 3600.0;
                 checked += 1;
@@ -441,7 +472,10 @@ mod tests {
         let speed = kilometres / hours;
         eprintln!("free-flow sample {checked} trips  {speed:.1} km/h");
         assert!(checked > 10);
-        assert!((20.0..=70.0).contains(&speed), "free-flow speed {speed:.1} km/h");
+        assert!(
+            (20.0..=70.0).contains(&speed),
+            "free-flow speed {speed:.1} km/h"
+        );
     }
 
     #[test]
@@ -475,7 +509,11 @@ mod tests {
         sim.schedule(trips);
         sim.advance(7_200.0, 1.0).expect("advance");
         let census = sim.census();
-        let speed = if sim.vht_s() > 1.0 { sim.vkt_m() * 3.6 / sim.vht_s() } else { 0.0 };
+        let speed = if sim.vht_s() > 1.0 {
+            sim.vkt_m() * 3.6 / sim.vht_s()
+        } else {
+            0.0
+        };
         eprintln!(
             "sample finished {} of {}  vht {:.2} h  vkt {:.2} km  {:.1} km/h",
             census.completed,
@@ -485,6 +523,9 @@ mod tests {
             speed
         );
         assert_eq!(census.completed, census.spawned);
-        assert!((20.0..=45.0).contains(&speed), "sample speed {speed:.1} km/h");
+        assert!(
+            (20.0..=45.0).contains(&speed),
+            "sample speed {speed:.1} km/h"
+        );
     }
 }

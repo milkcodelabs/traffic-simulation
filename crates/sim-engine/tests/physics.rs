@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use sim_core::{
-    plan_signal, realize_edge, Approach, AssembleInput, BBox, DiagramFamily, Edge, EdgeDraft, EdgeFlags, EdgeId,
-    EdgeScale, LonLat, Movement, Network, Node, NodeId, NodeKind, RoadClass, Scenario, SignalId, SignalSchedule, Turn,
-    UtmProjection, Xy,
+    plan_signal, realize_edge, Approach, AssembleInput, BBox, DiagramFamily, Edge, EdgeDraft,
+    EdgeFlags, EdgeId, EdgeScale, LonLat, Movement, Network, Node, NodeId, NodeKind, RoadClass,
+    Scenario, SignalId, SignalSchedule, Turn, UtmProjection, Xy,
 };
 use sim_engine::{Simulation, Trip};
 
@@ -34,7 +34,15 @@ fn node(kind: NodeKind, x: f64, y: f64) -> Node {
     }
 }
 
-fn link(from: NodeId, to: NodeId, shape: &[(f64, f64)], class: RoadClass, lanes: u8, speed_mps: f64, way: u64) -> Edge {
+fn link(
+    from: NodeId,
+    to: NodeId,
+    shape: &[(f64, f64)],
+    class: RoadClass,
+    lanes: u8,
+    speed_mps: f64,
+    way: u64,
+) -> Edge {
     realize_edge(EdgeDraft {
         from,
         to,
@@ -72,7 +80,12 @@ fn through(node: NodeId, from: EdgeId, to: EdgeId) -> Turn {
     }
 }
 
-fn assemble(nodes: Vec<Node>, edges: Vec<Edge>, turns: Vec<Turn>, signals: Vec<sim_core::SignalController>) -> Network {
+fn assemble(
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    turns: Vec<Turn>,
+    signals: Vec<sim_core::SignalController>,
+) -> Network {
     Network::assemble(AssembleInput {
         preset_id: None,
         bbox: bbox(),
@@ -98,13 +111,43 @@ fn bottleneck_spillback_fills_upstream_links_without_losing_vehicles() {
         node(NodeKind::Gateway, 600.0, 0.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (300.0, 0.0)], RoadClass::Residential, 1, 10.0, 1),
-        link(NodeId(1), NodeId(2), &[(300.0, 0.0), (450.0, 0.0)], RoadClass::Residential, 1, 10.0, 2),
-        link(NodeId(2), NodeId(3), &[(450.0, 0.0), (600.0, 0.0)], RoadClass::Residential, 1, 10.0, 3),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (300.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(300.0, 0.0), (450.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            2,
+        ),
+        link(
+            NodeId(2),
+            NodeId(3),
+            &[(450.0, 0.0), (600.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            3,
+        ),
     ];
     let storage_mid = edges[1].storage_max_veh;
-    assert!((storage_mid - 20.0).abs() < 1e-6, "mid-link storage {storage_mid}");
-    let turns = vec![through(NodeId(1), EdgeId(0), EdgeId(1)), through(NodeId(2), EdgeId(1), EdgeId(2))];
+    assert!(
+        (storage_mid - 20.0).abs() < 1e-6,
+        "mid-link storage {storage_mid}"
+    );
+    let turns = vec![
+        through(NodeId(1), EdgeId(0), EdgeId(1)),
+        through(NodeId(2), EdgeId(1), EdgeId(2)),
+    ];
     let network = assemble(nodes, edges, turns, Vec::new());
     let mut scenario = Scenario::baseline("closure");
     scenario.edge_capacity_scale.push(EdgeScale {
@@ -112,13 +155,28 @@ fn bottleneck_spillback_fills_upstream_links_without_losing_vehicles() {
         scale: 0.0,
     });
     let mut sim = Simulation::new(network, scenario);
-    let wave: Vec<Trip> = (0..50).map(|index| Trip::new(index as f64, NodeId(0), NodeId(3))).collect();
+    let wave: Vec<Trip> = (0..50)
+        .map(|index| Trip::new(index as f64, NodeId(0), NodeId(3)))
+        .collect();
     sim.schedule(wave);
-    sim.advance(300.0, 1.0).expect("conservation while the downstream link is closed");
+    sim.advance(300.0, 1.0)
+        .expect("conservation while the downstream link is closed");
 
-    assert_eq!(sim.link_vehicles(EdgeId(2)), 0, "a closed link accepts no vehicles");
-    assert_eq!(sim.link_vehicles(EdgeId(1)), 20, "the feeder stops at its storage ceiling");
-    assert_eq!(sim.link_vehicles(EdgeId(0)), 30, "the surplus spills into the upstream link");
+    assert_eq!(
+        sim.link_vehicles(EdgeId(2)),
+        0,
+        "a closed link accepts no vehicles"
+    );
+    assert_eq!(
+        sim.link_vehicles(EdgeId(1)),
+        20,
+        "the feeder stops at its storage ceiling"
+    );
+    assert_eq!(
+        sim.link_vehicles(EdgeId(0)),
+        30,
+        "the surplus spills into the upstream link"
+    );
     let census = sim.census();
     assert_eq!(census.spawned, 50);
     assert_eq!(census.completed, 0);
@@ -126,12 +184,17 @@ fn bottleneck_spillback_fills_upstream_links_without_losing_vehicles() {
     assert_eq!(census.waiting, 0);
 
     sim.scenario_mut().edge_capacity_scale.clear();
-    sim.advance(1_200.0, 1.0).expect("conservation after the closure lifts");
+    sim.advance(1_200.0, 1.0)
+        .expect("conservation after the closure lifts");
     let end = sim.census();
     assert_eq!(end.completed, 50);
     assert_eq!(end.active, 0);
     assert_eq!(end.spawned, end.active + end.completed);
-    assert!(sim.link_vehicles(EdgeId(0)) == 0 && sim.link_vehicles(EdgeId(1)) == 0 && sim.link_vehicles(EdgeId(2)) == 0);
+    assert!(
+        sim.link_vehicles(EdgeId(0)) == 0
+            && sim.link_vehicles(EdgeId(1)) == 0
+            && sim.link_vehicles(EdgeId(2)) == 0
+    );
 }
 
 #[test]
@@ -142,11 +205,28 @@ fn four_thousand_vehicles_stay_conserved_until_every_trip_completes() {
         node(NodeKind::Gateway, 4_000.0, 0.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (2_000.0, 0.0)], RoadClass::Motorway, 2, 36.0, 1),
-        link(NodeId(1), NodeId(2), &[(2_000.0, 0.0), (4_000.0, 0.0)], RoadClass::Motorway, 2, 36.0, 2),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (2_000.0, 0.0)],
+            RoadClass::Motorway,
+            2,
+            36.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(2_000.0, 0.0), (4_000.0, 0.0)],
+            RoadClass::Motorway,
+            2,
+            36.0,
+            2,
+        ),
     ];
     let capacity = edges[0].capacity_veh_per_s;
-    let free_flow = edges[0].length_m / edges[0].free_flow_speed_mps + edges[1].length_m / edges[1].free_flow_speed_mps;
+    let free_flow = edges[0].length_m / edges[0].free_flow_speed_mps
+        + edges[1].length_m / edges[1].free_flow_speed_mps;
     let turns = vec![through(NodeId(1), EdgeId(0), EdgeId(1))];
     let network = assemble(nodes, edges, turns, Vec::new());
     let mut sim = Simulation::new(network, Scenario::baseline("wave"));
@@ -161,7 +241,11 @@ fn four_thousand_vehicles_stay_conserved_until_every_trip_completes() {
     assert_eq!(census.spawned, 4_000);
     assert_eq!(census.completed, 4_000);
     assert_eq!(census.active, 0);
-    let finished = sim.vehicles().iter().filter_map(|vehicle| vehicle.arrive_s).fold(0.0, f64::max);
+    let finished = sim
+        .vehicles()
+        .iter()
+        .filter_map(|vehicle| vehicle.arrive_s)
+        .fold(0.0, f64::max);
     let discharge = free_flow + (4_000.0 - 1.0) / capacity;
     assert!(
         finished + 1.0 >= discharge,
@@ -186,9 +270,33 @@ fn flashing_amber_removes_red_delay_on_the_major_approach() {
         node(NodeKind::Gateway, 400.0, -200.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (400.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 1),
-        link(NodeId(1), NodeId(2), &[(400.0, 0.0), (800.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 2),
-        link(NodeId(3), NodeId(1), &[(400.0, -200.0), (400.0, 0.0)], RoadClass::Residential, 1, 30.0 / 3.6, 3),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (400.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(400.0, 0.0), (800.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            2,
+        ),
+        link(
+            NodeId(3),
+            NodeId(1),
+            &[(400.0, -200.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            30.0 / 3.6,
+            3,
+        ),
     ];
     let east = edges[0].bearings().expect("eastbound bearing").1;
     let north = edges[2].bearings().expect("northbound bearing").1;
@@ -210,7 +318,10 @@ fn flashing_amber_removes_red_delay_on_the_major_approach() {
             },
         ],
     );
-    assert!(signal.phases[0].incoming.contains(&EdgeId(0)), "the major road receives the first phase");
+    assert!(
+        signal.phases[0].incoming.contains(&EdgeId(0)),
+        "the major road receives the first phase"
+    );
     assert!(signal.cycle_length_s > 60.0);
     let turns = vec![
         through(NodeId(1), EdgeId(0), EdgeId(1)),
@@ -223,7 +334,9 @@ fn flashing_amber_removes_red_delay_on_the_major_approach() {
     let mut flashing = Scenario::baseline("flashing");
     flashing.signal_schedule = SignalSchedule::ForceFlashingAmber;
 
-    let departures: Vec<Trip> = (0..36).map(|index| Trip::new(index as f64 * 5.0, NodeId(0), NodeId(2))).collect();
+    let departures: Vec<Trip> = (0..36)
+        .map(|index| Trip::new(index as f64 * 5.0, NodeId(0), NodeId(2)))
+        .collect();
     let fixed_delay = run_delay(network.clone(), fixed, &departures);
     let flashing_delay = run_delay(network, flashing, &departures);
     assert!(
@@ -244,8 +357,24 @@ fn drivers_keep_a_mild_path_and_leave_when_delay_exceeds_inertia() {
         node(NodeKind::Gateway, 400.0, 0.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (200.0, 0.0)], RoadClass::Residential, 1, 10.0, 1),
-        link(NodeId(1), NodeId(2), &[(200.0, 0.0), (400.0, 0.0)], RoadClass::Residential, 1, 10.0, 2),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (200.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(200.0, 0.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            2,
+        ),
         link(
             NodeId(0),
             NodeId(2),
@@ -268,15 +397,26 @@ fn drivers_keep_a_mild_path_and_leave_when_delay_exceeds_inertia() {
     });
 
     let mut pinned = Simulation::new(network.clone(), scenario.clone());
-    let mut wave: Vec<Trip> = (0..25).map(|index| Trip::new(index as f64, NodeId(0), NodeId(2)).with_inertia(1_000.0)).collect();
+    let mut wave: Vec<Trip> = (0..25)
+        .map(|index| Trip::new(index as f64, NodeId(0), NodeId(2)).with_inertia(1_000.0))
+        .collect();
     wave.push(Trip::new(120.0, NodeId(0), NodeId(2)).with_inertia(1.4));
     pinned.schedule(wave);
-    pinned.advance(400.0, 1.0).expect("conservation during the reroute");
+    pinned
+        .advance(400.0, 1.0)
+        .expect("conservation during the reroute");
     let probe = pinned.vehicles().last().expect("probe");
-    assert_eq!(probe.path, vec![direct], "the probe should divert onto the long link");
+    assert_eq!(
+        probe.path,
+        vec![direct],
+        "the probe should divert onto the long link"
+    );
     assert!(probe.arrive_s.is_some(), "the diverted trip should finish");
     assert!(
-        pinned.vehicles().iter().any(|vehicle| vehicle.inertia > 10.0 && vehicle.path.contains(&choke)),
+        pinned
+            .vehicles()
+            .iter()
+            .any(|vehicle| vehicle.inertia > 10.0 && vehicle.path.contains(&choke)),
         "pinned drivers stay on the habitual path while their delay is inside the inertia band"
     );
 }
@@ -284,7 +424,10 @@ fn drivers_keep_a_mild_path_and_leave_when_delay_exceeds_inertia() {
 #[test]
 fn telemetry_tracks_queue_delay_and_a_snapshot_restores_it() {
     let network = Arc::new(assemble(
-        vec![node(NodeKind::Gateway, 0.0, 0.0), node(NodeKind::Gateway, 200.0, 0.0)],
+        vec![
+            node(NodeKind::Gateway, 0.0, 0.0),
+            node(NodeKind::Gateway, 200.0, 0.0),
+        ],
         vec![link(
             NodeId(0),
             NodeId(1),
@@ -300,30 +443,44 @@ fn telemetry_tracks_queue_delay_and_a_snapshot_restores_it() {
     let length = network.edges[0].length_m;
     let mut sim = Simulation::shared(Arc::clone(&network), Scenario::baseline("telemetry"));
     sim.schedule((0..15).map(|_| Trip::new(0.0, NodeId(0), NodeId(1))));
-    sim.advance(30.0, 1.0).expect("conservation while the queue forms");
+    sim.advance(30.0, 1.0)
+        .expect("conservation while the queue forms");
     let mut speed = [0.0_f32];
     let mut density = [0.0_f32];
     let mut queue = [0.0_f32];
     sim.write_link_fields(&mut speed, &mut density, &mut queue);
-    assert!(speed[0] < 0.95, "fifteen vehicles on one link must fall below free-flow, ratio {}", speed[0]);
-    assert!(queue[0] > 0.0, "vehicles that have spent their free-flow time are the queue");
+    assert!(
+        speed[0] < 0.95,
+        "fifteen vehicles on one link must fall below free-flow, ratio {}",
+        speed[0]
+    );
+    assert!(
+        queue[0] > 0.0,
+        "vehicles that have spent their free-flow time are the queue"
+    );
     assert!(density[0] > 0.0);
     assert!(sim.mean_speed_mps() < 10.0);
     let on_link = sim.link_vehicles(EdgeId(0));
     let snap = sim.snapshot();
     let queued_vht = sim.vht_s();
-    sim.advance(40.0, 1.0).expect("conservation after the snapshot");
+    sim.advance(40.0, 1.0)
+        .expect("conservation after the snapshot");
     let mut restored = Simulation::restore(Arc::clone(&network), snap);
     assert!((restored.time() - 30.0).abs() < 1e-9);
     assert!((restored.vht_s() - queued_vht).abs() < 1e-6);
     assert_eq!(restored.link_vehicles(EdgeId(0)), on_link);
-    restored.advance(400.0, 1.0).expect("the restored run still conserves vehicles");
+    restored
+        .advance(400.0, 1.0)
+        .expect("the restored run still conserves vehicles");
     let census = restored.census();
     assert_eq!(census.spawned, 15);
     assert_eq!(census.completed, 15);
     assert_eq!(census.active, 0);
     assert!((restored.vkt_m() - 15.0 * length).abs() < 1e-6);
-    assert!(restored.delay_s() > 0.0, "the queue must add delay beyond free-flow");
+    assert!(
+        restored.delay_s() > 0.0,
+        "the queue must add delay beyond free-flow"
+    );
     assert!(restored.vht_s() > 15.0 * length / 10.0);
     restored.write_link_fields(&mut speed, &mut density, &mut queue);
     assert!((speed[0] - 1.0).abs() < 1e-6);
@@ -388,9 +545,33 @@ fn signal_approaches() -> Network {
         node(NodeKind::Gateway, 400.0, -200.0),
     ];
     let edges = vec![
-        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (400.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 1),
-        link(NodeId(1), NodeId(2), &[(400.0, 0.0), (800.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 2),
-        link(NodeId(3), NodeId(1), &[(400.0, -200.0), (400.0, 0.0)], RoadClass::Residential, 1, 30.0 / 3.6, 3),
+        link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (400.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            1,
+        ),
+        link(
+            NodeId(1),
+            NodeId(2),
+            &[(400.0, 0.0), (800.0, 0.0)],
+            RoadClass::Primary,
+            2,
+            50.0 / 3.6,
+            2,
+        ),
+        link(
+            NodeId(3),
+            NodeId(1),
+            &[(400.0, -200.0), (400.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            30.0 / 3.6,
+            3,
+        ),
     ];
     let east = edges[0].bearings().expect("eastbound bearing").1;
     let north = edges[2].bearings().expect("northbound bearing").1;
@@ -422,7 +603,8 @@ fn signal_approaches() -> Network {
 fn run_delay(network: Network, scenario: Scenario, departures: &[Trip]) -> f64 {
     let mut sim = Simulation::new(network, scenario);
     sim.schedule(departures.iter().cloned());
-    sim.advance(2_000.0, 1.0).expect("signal comparison conserves vehicles");
+    sim.advance(2_000.0, 1.0)
+        .expect("signal comparison conserves vehicles");
     let census = sim.census();
     assert_eq!(census.completed, departures.len() as u64);
     assert_eq!(census.active, 0);

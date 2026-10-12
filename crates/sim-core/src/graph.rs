@@ -35,7 +35,9 @@ pub struct NodeClassHints {
 pub fn classify_node(hints: NodeClassHints) -> NodeKind {
     if hints.signalized {
         NodeKind::Signalized
-    } else if hints.mini_roundabout || (hints.on_roundabout && (hints.degree_undirected > 2 || hints.self_loop)) {
+    } else if hints.mini_roundabout
+        || (hints.on_roundabout && (hints.degree_undirected > 2 || hints.self_loop))
+    {
         NodeKind::Roundabout
     } else if hints.gateway {
         NodeKind::Gateway
@@ -231,7 +233,9 @@ pub struct AssembleInput {
 impl Network {
     pub fn assemble(mut input: AssembleInput) -> Result<Self, CoreError> {
         if input.nodes.is_empty() || input.edges.is_empty() {
-            return Err(CoreError::Invariant("a network needs at least one node and one edge".into()));
+            return Err(CoreError::Invariant(
+                "a network needs at least one node and one edge".into(),
+            ));
         }
         if input.nodes.len() > u32::MAX as usize || input.edges.len() > u32::MAX as usize {
             return Err(CoreError::Invariant("graph exceeds u32 indexing".into()));
@@ -244,7 +248,9 @@ impl Network {
             signal.id = SignalId(index as u32);
             let node_index = signal.node.index();
             if node_index >= input.nodes.len() {
-                return Err(CoreError::Invariant(format!("signal references missing node {node_index}")));
+                return Err(CoreError::Invariant(format!(
+                    "signal references missing node {node_index}"
+                )));
             }
             input.nodes[node_index].signal = Some(signal.id);
         }
@@ -252,16 +258,7 @@ impl Network {
         input.turns.sort_by_key(|turn| turn.node.0);
         let adjacency = build_adjacency(input.nodes.len(), &input.edges)?;
         let turn_offset = build_turn_offset(input.nodes.len(), &input.turns)?;
-        let stats = compute_stats(
-            &input.nodes,
-            &input.edges,
-            &input.turns,
-            &input.signals,
-            &input.zones,
-            input.contractions,
-            input.bbox,
-            input.diagram,
-        );
+        let stats = compute_stats(&input);
 
         let network = Self {
             format_version: FORMAT_VERSION,
@@ -298,41 +295,70 @@ impl Network {
             || self.adjacency.in_offset.len() != self.nodes.len() + 1
             || self.turn_offset.len() != self.nodes.len() + 1
         {
-            return Err(CoreError::Invariant("adjacency offsets do not match the node count".into()));
+            return Err(CoreError::Invariant(
+                "adjacency offsets do not match the node count".into(),
+            ));
         }
-        if *self.adjacency.out_offset.last().unwrap_or(&0) as usize != self.adjacency.out_edges.len()
-            || *self.adjacency.in_offset.last().unwrap_or(&0) as usize != self.adjacency.in_edges.len()
+        if *self.adjacency.out_offset.last().unwrap_or(&0) as usize
+            != self.adjacency.out_edges.len()
+            || *self.adjacency.in_offset.last().unwrap_or(&0) as usize
+                != self.adjacency.in_edges.len()
             || *self.turn_offset.last().unwrap_or(&0) as usize != self.turns.len()
         {
-            return Err(CoreError::Invariant("adjacency cursor does not match its edge list".into()));
+            return Err(CoreError::Invariant(
+                "adjacency cursor does not match its edge list".into(),
+            ));
         }
 
         for (index, edge) in self.edges.iter().enumerate() {
             if edge.from.index() >= self.nodes.len() || edge.to.index() >= self.nodes.len() {
-                return Err(CoreError::Invariant(format!("edge {index} leaves the node table")));
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} leaves the node table"
+                )));
             }
-            if edge.length_m < 1.0 || edge.lanes == 0 || edge.free_flow_speed_mps <= 0.0 || edge.base_free_flow_speed_mps <= 0.0
+            if edge.length_m < 1.0
+                || edge.lanes == 0
+                || edge.free_flow_speed_mps <= 0.0
+                || edge.base_free_flow_speed_mps <= 0.0
             {
-                return Err(CoreError::Invariant(format!("edge {index} has a non-physical length, lane count, or speed")));
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} has a non-physical length, lane count, or speed"
+                )));
             }
-            if edge.capacity_veh_per_s < 0.0 || edge.jam_density_per_lane <= 0.0 || edge.osm_way_ids.is_empty() {
-                return Err(CoreError::Invariant(format!("edge {index} has a non-physical capacity or no source way")));
+            if edge.capacity_veh_per_s < 0.0
+                || edge.jam_density_per_lane <= 0.0
+                || edge.osm_way_ids.is_empty()
+            {
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} has a non-physical capacity or no source way"
+                )));
             }
-            let expected_storage = f64::from(edge.lanes) * edge.jam_density_per_lane * edge.length_m;
+            let expected_storage =
+                f64::from(edge.lanes) * edge.jam_density_per_lane * edge.length_m;
             let scale = expected_storage.max(1.0);
             if (edge.storage_max_veh - expected_storage).abs() > 1e-6 * scale {
-                return Err(CoreError::Invariant(format!("edge {index} storage does not match lanes * jam density * length")));
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} storage does not match lanes * jam density * length"
+                )));
             }
             let geometric = polyline_length_m(&edge.geometry_xy);
             if (geometric - edge.length_m).abs() > 1e-6 * edge.length_m.max(1.0) {
-                return Err(CoreError::Invariant(format!("edge {index} length does not match its polyline")));
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} length does not match its polyline"
+                )));
             }
-            if edge.critical_speed_mps <= 0.0 || edge.capacity_veh_per_s / edge.critical_speed_mps >= edge.jam_density_veh_per_m() {
-                return Err(CoreError::Invariant(format!("edge {index} critical density is not below jam density")));
+            if edge.critical_speed_mps <= 0.0
+                || edge.capacity_veh_per_s / edge.critical_speed_mps >= edge.jam_density_veh_per_m()
+            {
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} critical density is not below jam density"
+                )));
             }
             let outgoing = self.adjacency.outgoing(edge.from);
             if !outgoing.contains(&EdgeId(index as u32)) {
-                return Err(CoreError::Invariant(format!("edge {index} is missing from the outgoing adjacency")));
+                return Err(CoreError::Invariant(format!(
+                    "edge {index} is missing from the outgoing adjacency"
+                )));
             }
         }
 
@@ -341,26 +367,38 @@ impl Network {
                 || turn.from_edge.index() >= self.edges.len()
                 || turn.to_edge.index() >= self.edges.len()
             {
-                return Err(CoreError::Invariant(format!("turn {index} references a missing element")));
+                return Err(CoreError::Invariant(format!(
+                    "turn {index} references a missing element"
+                )));
             }
             let incoming = &self.edges[turn.from_edge.index()];
             let outgoing = &self.edges[turn.to_edge.index()];
             if incoming.to != turn.node || outgoing.from != turn.node {
-                return Err(CoreError::Invariant(format!("turn {index} is not seated at its node")));
+                return Err(CoreError::Invariant(format!(
+                    "turn {index} is not seated at its node"
+                )));
             }
         }
 
         for (index, signal) in self.signals.iter().enumerate() {
             if signal.id.index() != index || signal.node.index() >= self.nodes.len() {
-                return Err(CoreError::Invariant(format!("signal {index} is not indexed by its node")));
+                return Err(CoreError::Invariant(format!(
+                    "signal {index} is not indexed by its node"
+                )));
             }
             if self.nodes[signal.node.index()].signal != Some(signal.id) {
-                return Err(CoreError::Invariant(format!("node does not point back at signal {index}")));
+                return Err(CoreError::Invariant(format!(
+                    "node does not point back at signal {index}"
+                )));
             }
             for phase in &signal.phases {
                 for edge_id in &phase.incoming {
-                    if edge_id.index() >= self.edges.len() || self.edges[edge_id.index()].to != signal.node {
-                        return Err(CoreError::Invariant(format!("signal {index} greens an edge that does not enter its node")));
+                    if edge_id.index() >= self.edges.len()
+                        || self.edges[edge_id.index()].to != signal.node
+                    {
+                        return Err(CoreError::Invariant(format!(
+                            "signal {index} greens an edge that does not enter its node"
+                        )));
                     }
                 }
             }
@@ -369,7 +407,9 @@ impl Network {
         for zone in &self.zones {
             for node in &zone.nodes {
                 if node.index() >= self.nodes.len() {
-                    return Err(CoreError::Invariant("zone references a missing node".into()));
+                    return Err(CoreError::Invariant(
+                        "zone references a missing node".into(),
+                    ));
                 }
             }
         }
@@ -466,7 +506,9 @@ fn build_adjacency(node_count: usize, edges: &[Edge]) -> Result<Adjacency, CoreE
         let from = edge.from.index();
         let to = edge.to.index();
         if from >= node_count || to >= node_count {
-            return Err(CoreError::Invariant("edge endpoint is outside the node table".into()));
+            return Err(CoreError::Invariant(
+                "edge endpoint is outside the node table".into(),
+            ));
         }
         out_degree[from] = out_degree[from].saturating_add(1);
         in_degree[to] = in_degree[to].saturating_add(1);
@@ -505,7 +547,9 @@ fn build_turn_offset(node_count: usize, turns: &[Turn]) -> Result<Vec<u32>, Core
     for turn in turns {
         let node = turn.node.index();
         if node >= node_count {
-            return Err(CoreError::Invariant("turn references a missing node".into()));
+            return Err(CoreError::Invariant(
+                "turn references a missing node".into(),
+            ));
         }
         counts[node] = counts[node].saturating_add(1);
     }
@@ -518,31 +562,30 @@ fn build_turn_offset(node_count: usize, turns: &[Turn]) -> Result<Vec<u32>, Core
     Ok(offset)
 }
 
-fn compute_stats(
-    nodes: &[Node],
-    edges: &[Edge],
-    turns: &[Turn],
-    signals: &[SignalController],
-    zones: &[Zone],
-    contractions: u32,
-    bbox: BBox,
-    diagram: DiagramFamily,
-) -> NetworkStats {
-    let total_length_m = edges.iter().map(|edge| edge.length_m).sum::<f64>();
-    let total_lane_m = edges.iter().map(|edge| edge.length_m * f64::from(edge.lanes)).sum::<f64>();
+fn compute_stats(input: &AssembleInput) -> NetworkStats {
+    let total_length_m = input.edges.iter().map(|edge| edge.length_m).sum::<f64>();
+    let total_lane_m = input
+        .edges
+        .iter()
+        .map(|edge| edge.length_m * f64::from(edge.lanes))
+        .sum::<f64>();
     NetworkStats {
-        nodes: nodes.len() as u32,
-        edges: edges.len() as u32,
-        turns: turns.len() as u32,
-        banned_turns: turns.iter().filter(|turn| !turn.allowed).count() as u32,
-        signals: signals.len() as u32,
-        gateways: nodes.iter().filter(|node| node.kind == NodeKind::Gateway).count() as u32,
-        zones: zones.len() as u32,
+        nodes: input.nodes.len() as u32,
+        edges: input.edges.len() as u32,
+        turns: input.turns.len() as u32,
+        banned_turns: input.turns.iter().filter(|turn| !turn.allowed).count() as u32,
+        signals: input.signals.len() as u32,
+        gateways: input
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Gateway)
+            .count() as u32,
+        zones: input.zones.len() as u32,
         total_length_m,
         total_lane_m,
-        mean_edge_length_m: total_length_m / edges.len() as f64,
-        contractions,
-        bbox,
-        diagram: diagram.name().to_string(),
+        mean_edge_length_m: total_length_m / input.edges.len() as f64,
+        contractions: input.contractions,
+        bbox: input.bbox,
+        diagram: input.diagram.name().to_string(),
     }
 }

@@ -19,13 +19,13 @@ impl DiurnalProfile {
     /// midday 0.34 at 13:00 (σ = 2.5 h), evening 0.30 at 17:30 (σ = 1.4 h).
     pub fn urban_default() -> Self {
         let mut raw = [0.0; 24];
-        for hour in 0..24 {
+        for (hour, slot) in raw.iter_mut().enumerate() {
             let t = hour as f64 + 0.5;
             let night = 0.08 / 24.0;
             let morning = 0.28 * gaussian(t, 8.0, 1.2);
             let midday = 0.34 * gaussian(t, 13.0, 2.5);
             let evening = 0.30 * gaussian(t, 17.5, 1.4);
-            raw[hour] = night + morning + midday + evening;
+            *slot = night + morning + midday + evening;
         }
         let sum: f64 = raw.iter().sum();
         let hour_fraction = raw.map(|value| value / sum);

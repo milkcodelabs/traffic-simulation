@@ -8,10 +8,13 @@ use std::time::{Duration, Instant};
 
 use sim_core::{Network, Scenario, SignalSchedule};
 use sim_engine::{
-    boundary_demand, compare_edge, emit_gateway_trips, lane_closure_scales, retain_routable, BoundaryDemand, DemandCursor,
-    EdgeObservation, Simulation, DIFF_DEGRADED, DIFF_IMPROVED, DIFF_NEUTRAL,
+    boundary_demand, compare_edge, emit_gateway_trips, lane_closure_scales, retain_routable,
+    BoundaryDemand, DemandCursor, EdgeObservation, Simulation, DIFF_DEGRADED, DIFF_IMPROVED,
+    DIFF_NEUTRAL,
 };
-use sim_ipc::{encode_frame, encode_keepalive, top_bottlenecks, Bottleneck, FrameHeader, FRAME_HEADER_BYTES};
+use sim_ipc::{
+    encode_frame, encode_keepalive, top_bottlenecks, Bottleneck, FrameHeader, FRAME_HEADER_BYTES,
+};
 
 const VISUAL_INTERVAL_S: f64 = 60.0;
 const CHECKPOINT_INTERVAL_S: f64 = 120.0;
@@ -122,7 +125,12 @@ impl Session {
         self.send(Command::Seek(time_s))
     }
 
-    pub fn apply_scenario(&self, speed_scale: Option<f64>, demand_scale: Option<f64>, lanes_closed: Option<u8>) -> Result<(), String> {
+    pub fn apply_scenario(
+        &self,
+        speed_scale: Option<f64>,
+        demand_scale: Option<f64>,
+        lanes_closed: Option<u8>,
+    ) -> Result<(), String> {
         self.send(Command::Scenario(ScenarioPatch {
             speed_scale,
             demand_scale,
@@ -139,7 +147,10 @@ impl Session {
     }
 
     pub fn diff_packet(&self) -> Vec<u8> {
-        let slot = self.published.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = self
+            .published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut bytes = Vec::with_capacity(36 + slot.diff.len());
         bytes.extend_from_slice(&0x54534431u32.to_le_bytes());
         bytes.extend_from_slice(&(slot.diff.len() as u32).to_le_bytes());
@@ -157,7 +168,10 @@ impl Session {
     }
 
     pub fn frame_since(&self, since: u64) -> Vec<u8> {
-        let slot = self.published.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = self
+            .published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if slot.sequence == 0 || slot.sequence == since || slot.frame.is_empty() {
             Vec::new()
         } else {
@@ -166,12 +180,17 @@ impl Session {
     }
 
     pub fn status(&self) -> (bool, Option<String>) {
-        let slot = self.published.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = self
+            .published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         (slot.sequence > 0, slot.error.clone())
     }
 
     fn send(&self, command: Command) -> Result<(), String> {
-        self.tx.send(command).map_err(|_| "simulation thread has stopped".to_string())
+        self.tx
+            .send(command)
+            .map_err(|_| "simulation thread has stopped".to_string())
     }
 }
 
@@ -308,13 +327,21 @@ fn run(network: Arc<Network>, rx: Receiver<Command>, published: Arc<Mutex<Publis
 
         if let Some(target) = seeking_until {
             let batch_started = Instant::now();
-            while sim.time() + 1e-6 < target && batch_started.elapsed() < Duration::from_millis(12) {
+            while sim.time() + 1e-6 < target && batch_started.elapsed() < Duration::from_millis(12)
+            {
                 let remaining = (target - sim.time()).floor().max(0.0) as u32;
                 if remaining == 0 {
                     break;
                 }
                 let piece = remaining.min(7_200);
-                if let Err(error) = advance_clock(&mut sim, &mut demand, demand_rate * demand_scale, &boundary, &mut rejected, piece) {
+                if let Err(error) = advance_clock(
+                    &mut sim,
+                    &mut demand,
+                    demand_rate * demand_scale,
+                    &boundary,
+                    &mut rejected,
+                    piece,
+                ) {
                     fault = Some(error.to_string());
                     paused = true;
                     seeking_until = None;
@@ -402,7 +429,14 @@ fn run(network: Arc<Network>, rx: Receiver<Command>, published: Arc<Mutex<Publis
             let paced = ((room * speed).floor() as u32).max(1);
             let take = whole.min(paced);
             let batch = Instant::now();
-            if let Err(error) = advance_clock(&mut sim, &mut demand, demand_rate * demand_scale, &boundary, &mut rejected, take) {
+            if let Err(error) = advance_clock(
+                &mut sim,
+                &mut demand,
+                demand_rate * demand_scale,
+                &boundary,
+                &mut rejected,
+                take,
+            ) {
                 fault = Some(error.to_string());
                 paused = true;
                 budget = 0.0;
@@ -412,7 +446,8 @@ fn run(network: Arc<Network>, rx: Receiver<Command>, published: Arc<Mutex<Publis
                 let owed = Duration::from_secs_f64(f64::from(take) / speed);
                 let spent = batch.elapsed();
                 if owed > spent {
-                    let until_frame = Duration::from_millis(30).saturating_sub(last_publish.elapsed());
+                    let until_frame =
+                        Duration::from_millis(30).saturating_sub(last_publish.elapsed());
                     let rest = owed.saturating_sub(spent);
                     let pause = rest.min(until_frame);
                     if !pause.is_zero() {
@@ -493,7 +528,13 @@ fn advance_clock(
     }
     let until = sim.time() + f64::from(seconds);
     let trips = retain_routable(
-        emit_gateway_trips(&boundary.origins, &boundary.destinations, rate, demand, until),
+        emit_gateway_trips(
+            &boundary.origins,
+            &boundary.destinations,
+            rate,
+            demand,
+            until,
+        ),
         boundary,
         rejected,
     );
@@ -546,7 +587,11 @@ fn handle(
             false
         }
         Command::Demand(value) => {
-            *demand_rate = if value.is_finite() { value.clamp(0.0, 100_000.0) } else { 0.0 };
+            *demand_rate = if value.is_finite() {
+                value.clamp(0.0, 100_000.0)
+            } else {
+                0.0
+            };
             false
         }
         Command::Signal(schedule) => {
@@ -555,12 +600,19 @@ fn handle(
             false
         }
         Command::Seek(target) => {
-            let target = if target.is_finite() { target.clamp(0.0, 86_400.0) } else { 0.0 };
+            let target = if target.is_finite() {
+                target.clamp(0.0, 86_400.0)
+            } else {
+                0.0
+            };
             if target + 0.5 < sim.time() {
                 if let Some(visual) = nearest_visual(visuals, target) {
                     publish_stored(visual, *speed, *paused, true, sequence, frame, published);
                 }
-                if let Some(index) = checkpoints.iter().rposition(|item| item.time_s <= target + 1e-3) {
+                if let Some(index) = checkpoints
+                    .iter()
+                    .rposition(|item| item.time_s <= target + 1e-3)
+                {
                     let snapshot = checkpoints[index].snapshot.clone();
                     *demand = checkpoints[index].demand;
                     *sim = Simulation::restore(Arc::clone(network), snapshot);
@@ -574,12 +626,20 @@ fn handle(
         }
         Command::Scenario(patch) => {
             if let Some(value) = patch.speed_scale {
-                sim.scenario_mut().global_speed_scale = if value.is_finite() { value.clamp(0.2, 1.5) } else { 1.0 };
+                sim.scenario_mut().global_speed_scale = if value.is_finite() {
+                    value.clamp(0.2, 1.5)
+                } else {
+                    1.0
+                };
                 sim.recompute_free_flow();
                 sim.invalidate_picture();
             }
             if let Some(value) = patch.demand_scale {
-                *demand_scale = if value.is_finite() { value.clamp(0.0, 5.0) } else { 1.0 };
+                *demand_scale = if value.is_finite() {
+                    value.clamp(0.0, 5.0)
+                } else {
+                    1.0
+                };
                 sim.scenario_mut().global_demand_scale = *demand_scale;
             }
             if let Some(lanes) = patch.lanes_closed {
@@ -616,7 +676,12 @@ fn handle(
     }
 }
 
-fn store_diff(sim: &Simulation, baseline: &Option<Vec<EdgeObservation>>, baseline_time_s: f64, published: &Mutex<Published>) {
+fn store_diff(
+    sim: &Simulation,
+    baseline: &Option<Vec<EdgeObservation>>,
+    baseline_time_s: f64,
+    published: &Mutex<Published>,
+) {
     let edges = sim.network().edges.len();
     let mut classes = vec![DIFF_NEUTRAL; edges];
     let mut improved = 0_u32;
@@ -692,6 +757,7 @@ fn publish_stored(
     slot.frame.clone_from(frame);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_live(
     sim: &Simulation,
     speed: f64,
@@ -739,7 +805,14 @@ fn publish_live(
     };
     if full {
         let ranked: Vec<Bottleneck> = top_bottlenecks(speed_ratio, queue_veh, 8);
-        encode_frame(&header, &ranked, speed_ratio, density_ratio, queue_veh, frame);
+        encode_frame(
+            &header,
+            &ranked,
+            speed_ratio,
+            density_ratio,
+            queue_veh,
+            frame,
+        );
     } else {
         encode_keepalive(&header, frame);
     }
@@ -749,7 +822,13 @@ fn publish_live(
     slot.error.clone_from(fault);
 }
 
-fn remember(sim: &Simulation, demand: &DemandCursor, frame: &[u8], visuals: &mut Vec<Visual>, checkpoints: &mut Vec<Checkpoint>) {
+fn remember(
+    sim: &Simulation,
+    demand: &DemandCursor,
+    frame: &[u8],
+    visuals: &mut Vec<Visual>,
+    checkpoints: &mut Vec<Checkpoint>,
+) {
     visuals.push(Visual {
         time_s: sim.time(),
         frame: frame.to_vec(),

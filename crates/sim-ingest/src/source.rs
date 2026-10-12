@@ -54,20 +54,103 @@ pub struct IngestOutput {
 }
 
 pub fn default_data_dir() -> PathBuf {
-    workspace_root().join("data")
+    for start in search_starts() {
+        if let Some(root) = find_workspace(&start) {
+            return root.join("data");
+        }
+    }
+    for start in search_starts() {
+        if let Some(dir) = bundled_data(&start) {
+            return dir;
+        }
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("data")
 }
 
+/// Workspace root that contains `crates/sim-core`.
+///
+/// A packaged binary is often started with a working directory that is not the
+/// repo, so the search also walks up from the executable. An installed copy
+/// with no repo nearby uses a `data/` directory beside the executable.
 pub fn workspace_root() -> PathBuf {
-    let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for start in search_starts() {
+        if let Some(found) = find_workspace(&start) {
+            return found;
+        }
+    }
+    search_starts()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn search_starts() -> Vec<PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            starts.push(dir.to_path_buf());
+        }
+    }
+    starts
+}
+
+fn find_workspace(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     for _ in 0..8 {
         if dir.join("crates").join("sim-core").is_dir() {
-            return dir;
+            return Some(dir);
         }
         if !dir.pop() {
             break;
         }
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    None
+}
+
+fn bundled_data(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    for _ in 0..4 {
+        for candidate in [dir.join("data"), dir.join("resources").join("data")] {
+            if candidate.join("cache").is_dir() {
+                return Some(candidate);
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Compiled Thessaloniki graph, without contacting Overpass.
+///
+/// A checkout uses `data/cache/thessaloniki.simnet`. A packaged desktop looks at
+/// the extra paths the shell passes in (the Tauri resource directory) and at
+/// `resources/data/cache` beside the executable.
+pub fn thessaloniki_cache(bundled: &[PathBuf]) -> Option<PathBuf> {
+    const NAME: &str = "thessaloniki.simnet";
+    if let Some(root) = search_starts()
+        .into_iter()
+        .find_map(|start| find_workspace(&start))
+    {
+        let path = root.join("data").join("cache").join(NAME);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let mut candidates = bundled.to_vec();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("resources").join("data").join("cache").join(NAME));
+            candidates.push(dir.join("data").join("cache").join(NAME));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 pub fn run(request: IngestRequest) -> Result<IngestOutput, IngestError> {
@@ -86,11 +169,17 @@ pub fn run(request: IngestRequest) -> Result<IngestOutput, IngestError> {
     })
 }
 
-fn resolve(request: &IngestRequest) -> Result<(OsmDocument, BBox, Option<PathBuf>, Option<String>, String), IngestError> {
+type ResolvedSource = (OsmDocument, BBox, Option<PathBuf>, Option<String>, String);
+
+fn resolve(request: &IngestRequest) -> Result<ResolvedSource, IngestError> {
     match &request.source {
         IngestSource::Preset(name) => {
-            let preset = preset_by_id(name).ok_or_else(|| IngestError::UnknownPreset(name.clone()))?;
-            let raw_path = request.data_dir.join("raw").join(format!("{}.osm.xml", preset.id));
+            let preset =
+                preset_by_id(name).ok_or_else(|| IngestError::UnknownPreset(name.clone()))?;
+            let raw_path = request
+                .data_dir
+                .join("raw")
+                .join(format!("{}.osm.xml", preset.id));
             ensure_overpass(preset.bbox, &raw_path, request.refresh)?;
             let document = parse_xml_file(&raw_path)?;
             Ok((
@@ -107,7 +196,13 @@ fn resolve(request: &IngestRequest) -> Result<(OsmDocument, BBox, Option<PathBuf
             let raw_path = request.data_dir.join("raw").join(format!("{name}.osm.xml"));
             ensure_overpass(bbox, &raw_path, request.refresh)?;
             let document = parse_xml_file(&raw_path)?;
-            Ok((document, bbox, Some(raw_path), None, format!("{name}.simnet")))
+            Ok((
+                document,
+                bbox,
+                Some(raw_path),
+                None,
+                format!("{name}.simnet"),
+            ))
         }
         IngestSource::OsmFile { path, bbox } => {
             let document = parse_path(path)?;
@@ -120,7 +215,13 @@ fn resolve(request: &IngestRequest) -> Result<(OsmDocument, BBox, Option<PathBuf
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("network")
                 .replace('.', "_");
-            Ok((document, bbox, Some(path.clone()), None, format!("{stem}.simnet")))
+            Ok((
+                document,
+                bbox,
+                Some(path.clone()),
+                None,
+                format!("{stem}.simnet"),
+            ))
         }
     }
 }
@@ -168,7 +269,12 @@ fn bbox_name(bbox: BBox) -> String {
 }
 
 fn ensure_overpass(bbox: BBox, dest: &Path, refresh: bool) -> Result<(), IngestError> {
-    if !refresh && dest.is_file() && fs::metadata(dest).map(|meta| meta.len() > 0).unwrap_or(false) {
+    if !refresh
+        && dest.is_file()
+        && fs::metadata(dest)
+            .map(|meta| meta.len() > 0)
+            .unwrap_or(false)
+    {
         return Ok(());
     }
     if let Some(parent) = dest.parent() {
@@ -205,14 +311,20 @@ fn download_overpass(bbox: BBox) -> Result<Vec<u8>, IngestError> {
         .map_err(|error| IngestError::Download(error.to_string()))?;
     let mut errors = Vec::new();
     for endpoint in OVERPASS_ENDPOINTS {
-        match client.post(*endpoint).form(&[("data", query.as_str())]).send() {
+        match client
+            .post(*endpoint)
+            .form(&[("data", query.as_str())])
+            .send()
+        {
             Ok(response) if response.status().is_success() => match response.bytes() {
                 Ok(bytes) => {
                     let body = String::from_utf8_lossy(&bytes);
                     if body.contains("<osm") && body.contains("</osm>") {
                         return Ok(bytes.to_vec());
                     }
-                    errors.push(format!("{endpoint} returned a body that is not a complete OSM document"));
+                    errors.push(format!(
+                        "{endpoint} returned a body that is not a complete OSM document"
+                    ));
                 }
                 Err(error) => errors.push(format!("{endpoint}: {error}")),
             },
@@ -260,3 +372,37 @@ fn overpass_query(bbox: BBox) -> String {
     query
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{bundled_data, find_workspace};
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_workspace_is_found_from_the_ingest_crate_directory() {
+        let nested = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = find_workspace(&nested).expect("workspace root");
+        assert!(root.join("crates").join("sim-core").is_dir());
+        assert!(root.join("Cargo.toml").is_file());
+    }
+
+    #[test]
+    fn a_cache_directory_beside_the_executable_is_a_data_root() {
+        let root = std::env::temp_dir().join(format!("traffic-data-{}", std::process::id()));
+        let cache = root.join("data").join("cache");
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        let found = bundled_data(&root).expect("bundled data");
+        assert_eq!(found, root.join("data"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_bundled_thessaloniki_cache_is_a_simnet_file() {
+        use std::io::Read;
+        let path = super::thessaloniki_cache(&[]).expect("data/cache/thessaloniki.simnet");
+        let mut magic = [0_u8; 4];
+        std::fs::File::open(&path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .expect("read cache magic");
+        assert_eq!(&magic, b"TSIM");
+    }
+}

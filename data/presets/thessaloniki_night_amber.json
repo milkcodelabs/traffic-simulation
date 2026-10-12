@@ -1,0 +1,14 @@
+{
+  "name": "thessaloniki-night-amber",
+  "signalSchedule": "unchanged",
+  "nightFlashing": {
+    "startS": 0,
+    "endS": 21600
+  },
+  "edgeCapacityScale": [],
+  "edgeSpeedScale": [],
+  "zoneDemandScale": [],
+  "globalSpeedScale": 1.0,
+  "globalDemandScale": 1.0,
+  "routeInertia": 1.4
+}

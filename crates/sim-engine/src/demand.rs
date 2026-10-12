@@ -17,7 +17,10 @@ pub struct DemandCursor {
 
 impl Default for DemandCursor {
     fn default() -> Self {
-        Self { next_s: 0.0, index: 0 }
+        Self {
+            next_s: 0.0,
+            index: 0,
+        }
     }
 }
 
@@ -58,12 +61,16 @@ pub fn emit_gateway_trips(
     cursor: &mut DemandCursor,
     until_s: f64,
 ) -> Vec<Trip> {
-    if !(vehicles_per_hour > 0.0) || !vehicles_per_hour.is_finite() || origins.is_empty() || destinations.is_empty() {
+    if vehicles_per_hour <= 0.0
+        || !vehicles_per_hour.is_finite()
+        || origins.is_empty()
+        || destinations.is_empty()
+    {
         cursor.next_s = until_s.max(cursor.next_s);
         return Vec::new();
     }
     let interval = 3600.0 / vehicles_per_hour;
-    if !(interval > 0.0) || !interval.is_finite() {
+    if interval <= 0.0 || !interval.is_finite() {
         cursor.next_s = until_s.max(cursor.next_s);
         return Vec::new();
     }
@@ -77,7 +84,11 @@ pub fn emit_gateway_trips(
         if destinations[destination_slot] == origin {
             destination_slot = (destination_slot + 1) % destinations_len;
         }
-        trips.push(Trip::new(cursor.next_s, origin, destinations[destination_slot]));
+        trips.push(Trip::new(
+            cursor.next_s,
+            origin,
+            destinations[destination_slot],
+        ));
         cursor.index += 1;
         cursor.next_s += interval;
     }
@@ -104,7 +115,11 @@ impl Default for SeededCursor {
 
 /// Zone demand multiplier for each gateway, in the same order as `gateways`.
 /// A missing zone scale is 1. This does not invent an origin-destination table.
-pub fn gateway_zone_scales(network: &Network, scenario: &Scenario, gateways: &[NodeId]) -> Vec<f64> {
+pub fn gateway_zone_scales(
+    network: &Network,
+    scenario: &Scenario,
+    gateways: &[NodeId],
+) -> Vec<f64> {
     let mut node_scale = vec![1.0_f64; network.nodes.len()];
     for scale in &scenario.zone_demand_scale {
         let Some(zone) = network.zones.get(scale.zone.index()) else {
@@ -117,7 +132,10 @@ pub fn gateway_zone_scales(network: &Network, scenario: &Scenario, gateways: &[N
             }
         }
     }
-    gateways.iter().map(|node| node_scale[node.index()]).collect()
+    gateways
+        .iter()
+        .map(|node| node_scale[node.index()])
+        .collect()
 }
 
 /// Seeded boundary trips. The same seed repeats the same departures.
@@ -132,7 +150,7 @@ pub fn emit_seeded_gateway_trips(
     cursor: &mut SeededCursor,
     until_s: f64,
 ) -> Vec<Trip> {
-    if !(vehicles_per_hour > 0.0)
+    if vehicles_per_hour <= 0.0
         || !vehicles_per_hour.is_finite()
         || origins.is_empty()
         || destinations.is_empty()
@@ -141,7 +159,7 @@ pub fn emit_seeded_gateway_trips(
         return Vec::new();
     }
     let interval = 3600.0 / vehicles_per_hour;
-    if !(interval > 0.0) || !interval.is_finite() {
+    if interval <= 0.0 || !interval.is_finite() {
         cursor.next_s = until_s.max(cursor.next_s);
         return Vec::new();
     }
@@ -235,9 +253,9 @@ pub fn boundary_demand(network: &Network, scenario: &Scenario) -> BoundaryDemand
         }
         bits.fill(0);
         mark_reached(network, &weights, *origin, &mut bits);
-        let can_leave = exits.iter().any(|exit| {
-            *exit != *origin && giant[exit.index()] && bit_set(&bits, exit.index())
-        });
+        let can_leave = exits
+            .iter()
+            .any(|exit| *exit != *origin && giant[exit.index()] && bit_set(&bits, exit.index()));
         if !can_leave {
             dropped_entries += 1;
             continue;
@@ -252,9 +270,10 @@ pub fn boundary_demand(network: &Network, scenario: &Scenario) -> BoundaryDemand
             dropped_exits += 1;
             continue;
         }
-        let reached_by_some = origins.iter().enumerate().any(|(slot, origin)| {
-            *origin != *exit && bit_set(&reached[slot], exit.index())
-        });
+        let reached_by_some = origins
+            .iter()
+            .enumerate()
+            .any(|(slot, origin)| *origin != *exit && bit_set(&reached[slot], exit.index()));
         if reached_by_some {
             destinations.push(*exit);
         } else {
@@ -282,7 +301,11 @@ pub fn boundary_demand(network: &Network, scenario: &Scenario) -> BoundaryDemand
 }
 
 /// Drop trips the router cannot path. The headway clock has already consumed the slot.
-pub fn retain_routable(trips: Vec<Trip>, boundary: &BoundaryDemand, rejected: &mut u64) -> Vec<Trip> {
+pub fn retain_routable(
+    trips: Vec<Trip>,
+    boundary: &BoundaryDemand,
+    rejected: &mut u64,
+) -> Vec<Trip> {
     trips
         .into_iter()
         .filter(|trip| {
@@ -290,7 +313,8 @@ pub fn retain_routable(trips: Vec<Trip>, boundary: &BoundaryDemand, rejected: &m
                 true
             } else {
                 *rejected += 1;
-                if *rejected <= 12 || *rejected % 1000 == 0 {
+                #[cfg(debug_assertions)]
+                if *rejected <= 12 || (*rejected).is_multiple_of(1000) {
                     eprintln!(
                         "rejected unroutable trip {:.0}s {} -> {} ({} so far)",
                         trip.depart_s, trip.origin.0, trip.destination.0, *rejected
@@ -326,9 +350,9 @@ fn giant_component(network: &Network) -> Vec<bool> {
         .map(|(index, _)| index)
         .unwrap_or(0);
     let mut inside = vec![false; count];
-    for index in 0..count {
+    for (index, member) in inside.iter_mut().enumerate() {
         if find(&mut parent, index as u32) as usize == root {
-            inside[index] = true;
+            *member = true;
         }
     }
     inside
@@ -379,7 +403,10 @@ mod tests {
         let gates = [NodeId(4), NodeId(8), NodeId(9)];
         let mut cursor = DemandCursor::default();
         let trips = emit_gateway_trips(&gates, &gates, 3600.0, &mut cursor, 2.0);
-        let pairs: Vec<_> = trips.iter().map(|trip| (trip.depart_s, trip.origin, trip.destination)).collect();
+        let pairs: Vec<_> = trips
+            .iter()
+            .map(|trip| (trip.depart_s, trip.origin, trip.destination))
+            .collect();
         assert_eq!(
             pairs,
             vec![
@@ -395,20 +422,55 @@ mod tests {
         let gates = [NodeId(1), NodeId(2), NodeId(3)];
         let mut first = SeededCursor::default();
         let mut second = SeededCursor::default();
-        let left = emit_seeded_gateway_trips(&gates, &gates, 3600.0, 11, &[1.0, 1.0, 1.0], &mut first, 4.0);
-        let right = emit_seeded_gateway_trips(&gates, &gates, 3600.0, 11, &[1.0, 1.0, 1.0], &mut second, 4.0);
+        let left = emit_seeded_gateway_trips(
+            &gates,
+            &gates,
+            3600.0,
+            11,
+            &[1.0, 1.0, 1.0],
+            &mut first,
+            4.0,
+        );
+        let right = emit_seeded_gateway_trips(
+            &gates,
+            &gates,
+            3600.0,
+            11,
+            &[1.0, 1.0, 1.0],
+            &mut second,
+            4.0,
+        );
         assert_eq!(left.len(), right.len());
         assert!(left.len() >= 3);
-        assert!(left.iter().zip(right.iter()).all(|(a, b)| a.origin == b.origin && a.destination == b.destination));
+        assert!(left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| a.origin == b.origin && a.destination == b.destination));
         let mut other = SeededCursor::default();
-        let changed = emit_seeded_gateway_trips(&gates, &gates, 3600.0, 99, &[1.0, 1.0, 1.0], &mut other, 4.0);
+        let changed = emit_seeded_gateway_trips(
+            &gates,
+            &gates,
+            3600.0,
+            99,
+            &[1.0, 1.0, 1.0],
+            &mut other,
+            4.0,
+        );
         let identical = left.len() == changed.len()
             && left.iter().zip(changed.iter()).all(|(a, b)| {
                 a.destination == b.destination && (a.depart_s - b.depart_s).abs() < 1e-9
             });
         assert!(!identical);
         let mut quiet = SeededCursor::default();
-        let none = emit_seeded_gateway_trips(&gates, &gates, 3600.0, 11, &[0.0, 0.0, 0.0], &mut quiet, 4.0);
+        let none = emit_seeded_gateway_trips(
+            &gates,
+            &gates,
+            3600.0,
+            11,
+            &[0.0, 0.0, 0.0],
+            &mut quiet,
+            4.0,
+        );
         assert!(none.is_empty());
         assert!(quiet.next_s > 4.0);
     }

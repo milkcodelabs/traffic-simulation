@@ -67,7 +67,10 @@ impl BBox {
 }
 
 pub fn polyline_length_m(points: &[Xy]) -> f64 {
-    points.windows(2).map(|pair| pair[0].distance_to(pair[1])).sum()
+    points
+        .windows(2)
+        .map(|pair| pair[0].distance_to(pair[1]))
+        .sum()
 }
 
 /// Great-circle distance on the WGS84 authalic sphere of radius 6_378_137 m.

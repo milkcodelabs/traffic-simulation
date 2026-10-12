@@ -3,16 +3,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use sim_core::{
-    boundary_distance_m, classify_movement, classify_node, plan_signal, polyline_length_m, realize_edge, Approach,
-    AssembleInput, BBox, CoreError, DiagramFamily, Edge, EdgeDraft, EdgeFlags, EdgeId, ElevationSampler, LonLat,
-    Movement, Network, Node, NodeClassHints, NodeId, NodeKind, RealizeError, RoadClass, Turn, UtmProjection, Zone,
-    ZoneKind, DEFAULT_HEAVY_VEHICLE_SHARE,
+    boundary_distance_m, classify_movement, classify_node, plan_signal, polyline_length_m,
+    realize_edge, Approach, AssembleInput, BBox, CoreError, DiagramFamily, Edge, EdgeDraft,
+    EdgeFlags, EdgeId, ElevationSampler, LonLat, Movement, Network, Node, NodeClassHints, NodeId,
+    NodeKind, RealizeError, RoadClass, Turn, UtmProjection, Zone, ZoneKind,
+    DEFAULT_HEAVY_VEHICLE_SHARE,
 };
 
 use crate::clip::{clip_chain, ShapePoint};
 use crate::error::IngestError;
 use crate::heuristics::{lanes_for, resolve_way, ResolvedWay, Travel};
-use crate::model::{is_synthetic, OsmDocument, OsmNode, OsmRestriction, OsmWay, SYNTHETIC_NODE_BASE};
+use crate::model::{
+    is_synthetic, OsmDocument, OsmNode, OsmRestriction, OsmWay, SYNTHETIC_NODE_BASE,
+};
 
 #[derive(Clone, Debug)]
 pub struct CompileConfig {
@@ -52,22 +55,40 @@ impl CompileWarnings {
     pub fn messages(&self) -> Vec<String> {
         let mut messages = Vec::new();
         if self.dropped_ways > 0 {
-            messages.push(format!("{} OSM ways were dropped by the driveable-road filter or fell outside the box", self.dropped_ways));
+            messages.push(format!(
+                "{} OSM ways were dropped by the driveable-road filter or fell outside the box",
+                self.dropped_ways
+            ));
         }
         if self.dropped_short_edges > 0 {
-            messages.push(format!("{} edges shorter than 1 m were dropped", self.dropped_short_edges));
+            messages.push(format!(
+                "{} edges shorter than 1 m were dropped",
+                self.dropped_short_edges
+            ));
         }
         if self.unreadable_speeds > 0 {
-            messages.push(format!("{} maxspeed tags were unreadable and used the European urban fallback", self.unreadable_speeds));
+            messages.push(format!(
+                "{} maxspeed tags were unreadable and used the European urban fallback",
+                self.unreadable_speeds
+            ));
         }
         if self.clipped_ways > 0 {
-            messages.push(format!("{} ways were clipped to the bounding box", self.clipped_ways));
+            messages.push(format!(
+                "{} ways were clipped to the bounding box",
+                self.clipped_ways
+            ));
         }
         if self.restrictions_unmatched > 0 {
-            messages.push(format!("{} turn restrictions did not match a surviving movement", self.restrictions_unmatched));
+            messages.push(format!(
+                "{} turn restrictions did not match a surviving movement",
+                self.restrictions_unmatched
+            ));
         }
         if self.dead_end_reversals > 0 {
-            messages.push(format!("{} dead-end reversal edges were added so arriving vehicles can leave", self.dead_end_reversals));
+            messages.push(format!(
+                "{} dead-end reversal edges were added so arriving vehicles can leave",
+                self.dead_end_reversals
+            ));
         }
         messages
     }
@@ -92,7 +113,13 @@ pub fn compile_document(
     let mut warnings = CompileWarnings::default();
     let mut nodes = document.nodes.clone();
     let mut next_synthetic = SYNTHETIC_NODE_BASE;
-    let chains = build_chains(document, bbox, &mut nodes, &mut next_synthetic, &mut warnings);
+    let chains = build_chains(
+        document,
+        bbox,
+        &mut nodes,
+        &mut next_synthetic,
+        &mut warnings,
+    );
     let raw = emit_raw(document, &chains, &nodes);
     let length_before_contraction_m = raw_polyline_length_m(&raw, &nodes, projection)?;
     let (raw, contractions) = contract(raw, &nodes);
@@ -104,12 +131,20 @@ pub fn compile_document(
         ))
         .into());
     }
-    let (mut edges, mut node_order) = realize_raw(&raw, &nodes, projection, elevation, config, &mut warnings)?;
+    let (mut edges, mut node_order) =
+        realize_raw(&raw, &nodes, projection, elevation, config, &mut warnings)?;
     if edges.is_empty() {
         return Err(IngestError::Empty);
     }
     compact(&mut node_order, &mut edges);
-    let gateway_osm = gateway_nodes(&node_order, &edges, &nodes, bbox, projection, config.gateway_margin_m);
+    let gateway_osm = gateway_nodes(
+        &node_order,
+        &edges,
+        &nodes,
+        bbox,
+        projection,
+        config.gateway_margin_m,
+    );
     let reversals = dead_end_reversals(&edges, &node_order, &gateway_osm, elevation, config)?;
     warnings.dead_end_reversals = reversals.len() as u32;
     edges.extend(reversals);
@@ -117,9 +152,19 @@ pub fn compile_document(
     let mut turns = build_turns(&edges, &node_order, &gateway_osm);
     apply_restrictions(document, &node_order, &edges, &mut turns, &mut warnings);
     let signals = build_signals(&node_order, &nodes, &edges);
-    let graph_nodes = build_nodes(&node_order, &edges, &nodes, &gateway_osm, projection, elevation);
+    let graph_nodes = build_nodes(
+        &node_order,
+        &edges,
+        &nodes,
+        &gateway_osm,
+        projection,
+        elevation,
+    );
     let zones = build_zones(&graph_nodes, projection, bbox, config.activity_zone_m);
-    let compiled_unix_s = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+    let compiled_unix_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
 
     let network = Network::assemble(AssembleInput {
         preset_id: config.preset_id.clone(),
@@ -142,13 +187,19 @@ pub fn compile_document(
     })
 }
 
-fn raw_polyline_length_m(edges: &[RawEdge], nodes: &FxHashMap<u64, OsmNode>, projection: UtmProjection) -> Result<f64, IngestError> {
+fn raw_polyline_length_m(
+    edges: &[RawEdge],
+    nodes: &FxHashMap<u64, OsmNode>,
+    projection: UtmProjection,
+) -> Result<f64, IngestError> {
     let mut total = 0.0;
     for edge in edges {
         let mut xy = Vec::with_capacity(edge.nodes.len());
         for id in &edge.nodes {
             let node = nodes.get(id).ok_or_else(|| {
-                IngestError::Core(CoreError::Invariant(format!("directed piece references missing node {id}")))
+                IngestError::Core(CoreError::Invariant(format!(
+                    "directed piece references missing node {id}"
+                )))
             })?;
             xy.push(projection.forward(LonLat {
                 lon_deg: node.lon,
@@ -208,7 +259,10 @@ fn build_chains(
         }
         let clipped = parts.len() != 1
             || parts[0].len() != shape.len()
-            || parts.iter().flatten().any(|point| is_synthetic(point.osm_id));
+            || parts
+                .iter()
+                .flatten()
+                .any(|point| is_synthetic(point.osm_id));
         if clipped {
             warnings.clipped_ways += 1;
         }
@@ -237,7 +291,11 @@ struct RawEdge {
     osm_way_ids: Vec<u64>,
 }
 
-fn emit_raw(document: &OsmDocument, chains: &[Chain], nodes: &FxHashMap<u64, OsmNode>) -> Vec<RawEdge> {
+fn emit_raw(
+    document: &OsmDocument,
+    chains: &[Chain],
+    nodes: &FxHashMap<u64, OsmNode>,
+) -> Vec<RawEdge> {
     let vertices = vertex_set(chains, nodes);
     let mut raw = Vec::new();
     for chain in chains {
@@ -271,13 +329,18 @@ fn vertex_set(chains: &[Chain], nodes: &FxHashMap<u64, OsmNode>) -> FxHashSet<u6
             endpoints.contains(id)
                 || *count >= 2
                 || is_synthetic(*id)
-                || nodes.get(id).is_some_and(|node| node.signal || node.mini_roundabout || node.motorway_junction)
+                || nodes.get(id).is_some_and(|node| {
+                    node.signal || node.mini_roundabout || node.motorway_junction
+                })
         })
         .map(|(id, _)| id)
         .collect()
 }
 
-fn split_at_vertices(points: &[ShapePoint], is_vertex: impl Fn(u64) -> bool) -> Vec<Vec<ShapePoint>> {
+fn split_at_vertices(
+    points: &[ShapePoint],
+    is_vertex: impl Fn(u64) -> bool,
+) -> Vec<Vec<ShapePoint>> {
     let mut parts = Vec::new();
     let mut current = Vec::new();
     for (index, point) in points.iter().enumerate() {
@@ -296,7 +359,13 @@ fn split_at_vertices(points: &[ShapePoint], is_vertex: impl Fn(u64) -> bool) -> 
     parts
 }
 
-fn directed_piece(way: &OsmWay, resolved: &ResolvedWay, piece: &[ShapePoint], travel: Travel, oneway: bool) -> Option<RawEdge> {
+fn directed_piece(
+    way: &OsmWay,
+    resolved: &ResolvedWay,
+    piece: &[ShapePoint],
+    travel: Travel,
+    oneway: bool,
+) -> Option<RawEdge> {
     let mut ids: Vec<u64> = piece.iter().map(|point| point.osm_id).collect();
     if travel == Travel::Backward {
         ids.reverse();
@@ -336,8 +405,12 @@ fn contract(edges: Vec<RawEdge>, nodes: &FxHashMap<u64, OsmNode>) -> (Vec<RawEdg
     }
     let contractable = |id: u64| {
         let preserved = is_synthetic(id)
-            || nodes.get(&id).is_some_and(|node| node.signal || node.mini_roundabout || node.motorway_junction);
-        !preserved && incoming.get(&id).is_some_and(|items| items.len() == 1) && outgoing.get(&id).is_some_and(|items| items.len() == 1)
+            || nodes
+                .get(&id)
+                .is_some_and(|node| node.signal || node.mini_roundabout || node.motorway_junction);
+        !preserved
+            && incoming.get(&id).is_some_and(|items| items.len() == 1)
+            && outgoing.get(&id).is_some_and(|items| items.len() == 1)
     };
     let compatible = |left: &RawEdge, right: &RawEdge| {
         left.class == right.class
@@ -393,8 +466,8 @@ fn realize_raw(
     let mut index_of: FxHashMap<u64, NodeId> = FxHashMap::default();
     for edge in raw {
         for endpoint in [edge.from, edge.to] {
-            if !index_of.contains_key(&endpoint) {
-                index_of.insert(endpoint, NodeId(order.len() as u32));
+            if let std::collections::hash_map::Entry::Vacant(slot) = index_of.entry(endpoint) {
+                slot.insert(NodeId(order.len() as u32));
                 order.push(endpoint);
             }
         }
@@ -455,7 +528,7 @@ fn realize_one(
     })
 }
 
-fn compact(order: &mut Vec<u64>, edges: &mut Vec<Edge>) {
+fn compact(order: &mut Vec<u64>, edges: &mut [Edge]) {
     let mut used = vec![false; order.len()];
     for edge in edges.iter() {
         used[edge.from.index()] = true;
@@ -547,7 +620,11 @@ fn dead_end_reversals(
     Ok(reversals)
 }
 
-fn reverse_edge(edge: &Edge, elevation: &dyn ElevationSampler, config: &CompileConfig) -> Result<Edge, RealizeError> {
+fn reverse_edge(
+    edge: &Edge,
+    elevation: &dyn ElevationSampler,
+    config: &CompileConfig,
+) -> Result<Edge, RealizeError> {
     let mut geometry_lonlat = edge.geometry_lonlat.clone();
     geometry_lonlat.reverse();
     let mut geometry_xy = edge.geometry_xy.clone();
@@ -596,7 +673,8 @@ fn build_turns(edges: &[Edge], order: &[u64], gateways: &FxHashSet<u64>) -> Vec<
     let mut turns = Vec::new();
     for node_index in 0..order.len() {
         let node = NodeId(node_index as u32);
-        let allow_uturn = !gateways.contains(&order[node_index]) && neighbors[node_index].len() <= 1;
+        let allow_uturn =
+            !gateways.contains(&order[node_index]) && neighbors[node_index].len() <= 1;
         for from_edge in &incoming[node_index] {
             let Some((_, arrival)) = edges[from_edge.index()].bearings() else {
                 continue;
@@ -656,7 +734,9 @@ fn apply_restrictions(
             continue;
         }
         let matched = match action {
-            RestrictionAction::Forbid(filter) => forbid_pairs(restriction, &via, filter, edges, turns),
+            RestrictionAction::Forbid(filter) => {
+                forbid_pairs(restriction, &via, filter, edges, turns)
+            }
             RestrictionAction::Only(filter) => keep_only(restriction, &via, filter, edges, turns),
         };
         if matched {
@@ -673,7 +753,10 @@ fn via_nodes(
     way_nodes: &FxHashMap<u64, FxHashSet<u64>>,
 ) -> FxHashSet<NodeId> {
     let mut via = FxHashSet::default();
-    if let Some(node) = restriction.via_node.and_then(|id| osm_to_node.get(&id).copied()) {
+    if let Some(node) = restriction
+        .via_node
+        .and_then(|id| osm_to_node.get(&id).copied())
+    {
         via.insert(node);
     }
     if let Some(way) = restriction.via_way.and_then(|id| way_nodes.get(&id)) {
@@ -725,7 +808,13 @@ fn filter_matches(filter: TurnFilter, movement: Movement) -> bool {
     }
 }
 
-fn forbid_pairs(restriction: &OsmRestriction, via: &FxHashSet<NodeId>, filter: TurnFilter, edges: &[Edge], turns: &mut [Turn]) -> bool {
+fn forbid_pairs(
+    restriction: &OsmRestriction,
+    via: &FxHashSet<NodeId>,
+    filter: TurnFilter,
+    edges: &[Edge],
+    turns: &mut [Turn],
+) -> bool {
     let mut matched = false;
     for turn in turns.iter_mut() {
         if !via.contains(&turn.node) {
@@ -733,7 +822,10 @@ fn forbid_pairs(restriction: &OsmRestriction, via: &FxHashSet<NodeId>, filter: T
         }
         let from = &edges[turn.from_edge.index()];
         let to = &edges[turn.to_edge.index()];
-        if from.arrives_as(restriction.from_way) && to.leaves_as(restriction.to_way) && filter_matches(filter, turn.movement) {
+        if from.arrives_as(restriction.from_way)
+            && to.leaves_as(restriction.to_way)
+            && filter_matches(filter, turn.movement)
+        {
             turn.allowed = false;
             matched = true;
         }
@@ -741,10 +833,18 @@ fn forbid_pairs(restriction: &OsmRestriction, via: &FxHashSet<NodeId>, filter: T
     matched
 }
 
-fn keep_only(restriction: &OsmRestriction, via: &FxHashSet<NodeId>, filter: TurnFilter, edges: &[Edge], turns: &mut [Turn]) -> bool {
+fn keep_only(
+    restriction: &OsmRestriction,
+    via: &FxHashSet<NodeId>,
+    filter: TurnFilter,
+    edges: &[Edge],
+    turns: &mut [Turn],
+) -> bool {
     let mut approaches = FxHashSet::default();
     for turn in turns.iter() {
-        if via.contains(&turn.node) && edges[turn.from_edge.index()].arrives_as(restriction.from_way) {
+        if via.contains(&turn.node)
+            && edges[turn.from_edge.index()].arrives_as(restriction.from_way)
+        {
             approaches.insert((turn.node.0, turn.from_edge.0));
         }
     }
@@ -787,7 +887,11 @@ fn keep_only(restriction: &OsmRestriction, via: &FxHashSet<NodeId>, filter: Turn
     matched
 }
 
-fn build_signals(order: &[u64], nodes: &FxHashMap<u64, OsmNode>, edges: &[Edge]) -> Vec<sim_core::SignalController> {
+fn build_signals(
+    order: &[u64],
+    nodes: &FxHashMap<u64, OsmNode>,
+    edges: &[Edge],
+) -> Vec<sim_core::SignalController> {
     let mut incoming: Vec<Vec<EdgeId>> = vec![Vec::new(); order.len()];
     for (index, edge) in edges.iter().enumerate() {
         incoming[edge.to.index()].push(EdgeId(index as u32));
@@ -810,7 +914,11 @@ fn build_signals(order: &[u64], nodes: &FxHashMap<u64, OsmNode>, edges: &[Edge])
                 })
             })
             .collect::<Vec<_>>();
-        signals.push(plan_signal(NodeId(index as u32), sim_core::SignalId(signals.len() as u32), &approaches));
+        signals.push(plan_signal(
+            NodeId(index as u32),
+            sim_core::SignalId(signals.len() as u32),
+            &approaches,
+        ));
     }
     signals
 }
@@ -848,10 +956,18 @@ fn build_nodes(
                     lat_deg: 0.0,
                 });
             let synthetic = is_synthetic(*osm_id);
-            let on_roundabout = incident[index].iter().any(|edge| edges[*edge].flags.roundabout);
-            let self_loop = edges.iter().any(|edge| edge.from.index() == index && edge.to.index() == index);
-            let has_link = incident[index].iter().any(|edge| edges[*edge].class.is_link());
-            let has_non_link = incident[index].iter().any(|edge| !edges[*edge].class.is_link());
+            let on_roundabout = incident[index]
+                .iter()
+                .any(|edge| edges[*edge].flags.roundabout);
+            let self_loop = edges
+                .iter()
+                .any(|edge| edge.from.index() == index && edge.to.index() == index);
+            let has_link = incident[index]
+                .iter()
+                .any(|edge| edges[*edge].class.is_link());
+            let has_non_link = incident[index]
+                .iter()
+                .any(|edge| !edges[*edge].class.is_link());
             let kind = classify_node(NodeClassHints {
                 signalized: source.is_some_and(|node| node.signal),
                 mini_roundabout: source.is_some_and(|node| node.mini_roundabout),
@@ -897,12 +1013,23 @@ fn build_zones(nodes: &[Node], projection: UtmProjection, bbox: BBox, cell_m: f6
         }
         let column = ((node.xy.x_m - origin.x_m) / cell_m).floor() as i64;
         let row = ((node.xy.y_m - origin.y_m) / cell_m).floor() as i64;
-        cells.entry((column, row)).or_default().push(NodeId(index as u32));
+        cells
+            .entry((column, row))
+            .or_default()
+            .push(NodeId(index as u32));
     }
     for members in cells.into_values() {
         let centroid = LonLat {
-            lon_deg: members.iter().map(|id| nodes[id.index()].lonlat.lon_deg).sum::<f64>() / members.len() as f64,
-            lat_deg: members.iter().map(|id| nodes[id.index()].lonlat.lat_deg).sum::<f64>() / members.len() as f64,
+            lon_deg: members
+                .iter()
+                .map(|id| nodes[id.index()].lonlat.lon_deg)
+                .sum::<f64>()
+                / members.len() as f64,
+            lat_deg: members
+                .iter()
+                .map(|id| nodes[id.index()].lonlat.lat_deg)
+                .sum::<f64>()
+                / members.len() as f64,
         };
         zones.push(Zone {
             kind: ZoneKind::Activity,
@@ -929,7 +1056,8 @@ mod tests {
     }
 
     fn compile_fixture() -> CompileOutput {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample_junction.osm");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sample_junction.osm");
         let document = crate::xml::parse_xml_file(&path).unwrap();
         let mut config = CompileConfig::new(wide_box());
         config.preset_id = Some("fixture".into());
@@ -945,7 +1073,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing osm node {osm_id}"))
     }
 
-    fn edge_between<'a>(network: &'a Network, from_osm: u64, to_osm: u64) -> (EdgeId, &'a Edge) {
+    fn edge_between(network: &Network, from_osm: u64, to_osm: u64) -> (EdgeId, &Edge) {
         let from = node_id(network, from_osm);
         let to = node_id(network, to_osm);
         network
@@ -963,7 +1091,9 @@ mod tests {
         let network = &output.network;
         assert!(network.nodes.iter().all(|node| node.osm_id != 2));
         assert_eq!(network.contractions, 1);
-        assert!((output.length_before_contraction_m - output.length_after_contraction_m).abs() < 1e-4);
+        assert!(
+            (output.length_before_contraction_m - output.length_after_contraction_m).abs() < 1e-4
+        );
         assert!(output.length_after_contraction_m > 1_000.0);
         let census = network.weak_components();
         assert_eq!(census.components, 1);
@@ -989,17 +1119,31 @@ mod tests {
         let (_, faster) = edge_between(network, 4, 5);
         assert!((faster.base_free_flow_speed_mps * 3.6 - 70.0).abs() < 1e-6);
 
-        let roundabouts: Vec<_> = network.edges.iter().filter(|edge| edge.flags.roundabout).collect();
+        let roundabouts: Vec<_> = network
+            .edges
+            .iter()
+            .filter(|edge| edge.flags.roundabout)
+            .collect();
         assert!(roundabouts.len() >= 2);
         assert!(roundabouts.iter().any(|edge| {
-            roundabouts.iter().any(|other| edge.to == other.from && edge.from == other.to && !std::ptr::eq(*edge, *other))
+            roundabouts.iter().any(|other| {
+                edge.to == other.from && edge.from == other.to && !std::ptr::eq(*edge, *other)
+            })
         }));
 
         let (from_id, _) = edge_between(network, 1, 3);
         let (left_id, _) = edge_between(network, 3, 6);
         let (right_id, _) = edge_between(network, 3, 7);
-        let left = network.turns.iter().find(|turn| turn.from_edge == from_id && turn.to_edge == left_id).unwrap();
-        let right = network.turns.iter().find(|turn| turn.from_edge == from_id && turn.to_edge == right_id).unwrap();
+        let left = network
+            .turns
+            .iter()
+            .find(|turn| turn.from_edge == from_id && turn.to_edge == left_id)
+            .unwrap();
+        let right = network
+            .turns
+            .iter()
+            .find(|turn| turn.from_edge == from_id && turn.to_edge == right_id)
+            .unwrap();
         assert_eq!(left.movement, Movement::Left);
         assert!(!left.allowed);
         assert_eq!(right.movement, Movement::Right);
@@ -1019,7 +1163,10 @@ mod tests {
                 other.from == edge.to && other.to == edge.from && !other.flags.dead_end_reversal
             }));
         }
-        assert_eq!(network.nodes[node_id(network, 3).index()].kind, NodeKind::Signalized);
+        assert_eq!(
+            network.nodes[node_id(network, 3).index()].kind,
+            NodeKind::Signalized
+        );
         assert!(output.warnings.restrictions_applied >= 1);
 
         let temp = std::env::temp_dir().join("traffic-sim-fixture.simnet");
@@ -1053,10 +1200,14 @@ mod tests {
             max_lat: 40.70,
             max_lon: 23.00,
         });
-        let output = compile_document(&document, &config, &FlatElevation { elevation_m: 0.0 }).unwrap();
+        let output =
+            compile_document(&document, &config, &FlatElevation { elevation_m: 0.0 }).unwrap();
         assert_eq!(output.network.stats.gateways, 1);
-        assert!(output.network.nodes.iter().any(|node| node.synthetic && node.kind == NodeKind::Gateway));
+        assert!(output
+            .network
+            .nodes
+            .iter()
+            .any(|node| node.synthetic && node.kind == NodeKind::Gateway));
         assert!(output.warnings.clipped_ways >= 1);
     }
 }
-

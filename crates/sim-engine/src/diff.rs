@@ -16,8 +16,16 @@ pub fn compare_edge(base: EdgeObservation, test: EdgeObservation, free_flow_mps:
         return DIFF_NEUTRAL;
     }
     let free = free_flow_mps.max(1.0);
-    let base_speed = if base.observed() { base.mean_speed_mps } else { free };
-    let test_speed = if test.observed() { test.mean_speed_mps } else { free };
+    let base_speed = if base.observed() {
+        base.mean_speed_mps
+    } else {
+        free
+    };
+    let test_speed = if test.observed() {
+        test.mean_speed_mps
+    } else {
+        free
+    };
     let speed_delta = test_speed - base_speed;
     let delay_delta = test.delay_s - base.delay_s;
     let speed_hit = speed_delta.abs() > 0.05 * free;
@@ -60,10 +68,13 @@ pub fn distribution(samples: &[f64]) -> Distribution {
     let variance = if n < 2 {
         0.0
     } else {
-        samples.iter().map(|value| {
-            let delta = value - mean;
-            delta * delta
-        }).sum::<f64>()
+        samples
+            .iter()
+            .map(|value| {
+                let delta = value - mean;
+                delta * delta
+            })
+            .sum::<f64>()
             / (n - 1) as f64
     };
     let half = t_crit_975(n.saturating_sub(1)) * (variance / n as f64).sqrt();
@@ -78,8 +89,9 @@ pub fn distribution(samples: &[f64]) -> Distribution {
 
 fn t_crit_975(df: usize) -> f64 {
     const TABLE: [f64; 30] = [
-        12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
-        2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+        12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160,
+        2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056,
+        2.052, 2.048, 2.045, 2.042,
     ];
     if df == 0 {
         0.0
@@ -104,11 +116,26 @@ mod tests {
     #[test]
     fn colours_follow_speed_and_delay() {
         let free = 10.0;
-        assert_eq!(compare_edge(obs(0.0, f64::NAN), obs(0.0, f64::NAN), free), DIFF_NEUTRAL);
-        assert_eq!(compare_edge(obs(0.0, 10.0), obs(0.0, 10.1), free), DIFF_NEUTRAL);
-        assert_eq!(compare_edge(obs(0.0, 8.0), obs(0.0, 10.0), free), DIFF_IMPROVED);
-        assert_eq!(compare_edge(obs(0.0, 10.0), obs(40.0, 10.0), free), DIFF_DEGRADED);
-        assert_eq!(compare_edge(obs(20.0, 8.0), obs(0.0, 10.0), free), DIFF_IMPROVED);
+        assert_eq!(
+            compare_edge(obs(0.0, f64::NAN), obs(0.0, f64::NAN), free),
+            DIFF_NEUTRAL
+        );
+        assert_eq!(
+            compare_edge(obs(0.0, 10.0), obs(0.0, 10.1), free),
+            DIFF_NEUTRAL
+        );
+        assert_eq!(
+            compare_edge(obs(0.0, 8.0), obs(0.0, 10.0), free),
+            DIFF_IMPROVED
+        );
+        assert_eq!(
+            compare_edge(obs(0.0, 10.0), obs(40.0, 10.0), free),
+            DIFF_DEGRADED
+        );
+        assert_eq!(
+            compare_edge(obs(20.0, 8.0), obs(0.0, 10.0), free),
+            DIFF_IMPROVED
+        );
     }
 
     #[test]

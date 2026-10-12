@@ -114,7 +114,9 @@ pub fn equilibrium_flow(
             let scale = capacity_veh_per_s / classical_peak;
             scale * greenshields_flow(free_flow_mps, jam_veh_per_m, density)
         }
-        DiagramFamily::Smulders { critical_speed_ratio } => {
+        DiagramFamily::Smulders {
+            critical_speed_ratio,
+        } => {
             let critical_speed = free_flow_mps * critical_speed_ratio;
             smulders_flow(
                 free_flow_mps,
@@ -175,7 +177,10 @@ mod tests {
         close(smulders_flow(v, v, q, jam, 0.0), 0.0);
         close(smulders_flow(v, v, q, jam, jam), 0.0);
         close(smulders_flow(v, v, q, jam, k_c), q);
-        close(smulders_flow(v, v, q, jam, k_c * 0.4), triangular_flow(v, w, jam, k_c * 0.4));
+        close(
+            smulders_flow(v, v, q, jam, k_c * 0.4),
+            triangular_flow(v, w, jam, k_c * 0.4),
+        );
 
         let u_c = 0.85 * v;
         let k_sm = q / u_c;

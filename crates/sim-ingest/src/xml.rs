@@ -37,7 +37,9 @@ fn parse_xml_reader<R: std::io::BufRead>(reader: R) -> Result<OsmDocument, Inges
     let mut node_junction = false;
 
     loop {
-        let event = xml.read_event_into(&mut buffer).map_err(|error| IngestError::Xml(error.to_string()))?;
+        let event = xml
+            .read_event_into(&mut buffer)
+            .map_err(|error| IngestError::Xml(error.to_string()))?;
         match event {
             Event::Start(element) => match local_name(element.name().as_ref()) {
                 b"node" => {
@@ -64,7 +66,15 @@ fn parse_xml_reader<R: std::io::BufRead>(reader: R) -> Result<OsmDocument, Inges
                         way.nodes.push(reference);
                     }
                 }
-                b"tag" => apply_tag(scope, &attributes(&element), &mut way, &mut relation, &mut node_signal, &mut node_mini, &mut node_junction),
+                b"tag" => apply_tag(
+                    scope,
+                    &attributes(&element),
+                    &mut way,
+                    &mut relation,
+                    &mut node_signal,
+                    &mut node_mini,
+                    &mut node_junction,
+                ),
                 b"member" if scope == Scope::Relation => {
                     let attrs = attributes(&element);
                     relation.members.push(Member {
@@ -96,7 +106,15 @@ fn parse_xml_reader<R: std::io::BufRead>(reader: R) -> Result<OsmDocument, Inges
                         way.nodes.push(reference);
                     }
                 }
-                b"tag" => apply_tag(scope, &attributes(&element), &mut way, &mut relation, &mut node_signal, &mut node_mini, &mut node_junction),
+                b"tag" => apply_tag(
+                    scope,
+                    &attributes(&element),
+                    &mut way,
+                    &mut relation,
+                    &mut node_signal,
+                    &mut node_mini,
+                    &mut node_junction,
+                ),
                 b"member" if scope == Scope::Relation => {
                     let attrs = attributes(&element);
                     relation.members.push(Member {
@@ -125,7 +143,8 @@ fn parse_xml_reader<R: std::io::BufRead>(reader: R) -> Result<OsmDocument, Inges
                 }
                 b"way" if scope == Scope::Way => {
                     let finished = std::mem::take(&mut way);
-                    if finished.id != 0 && !finished.highway.is_empty() && finished.nodes.len() >= 2 {
+                    if finished.id != 0 && !finished.highway.is_empty() && finished.nodes.len() >= 2
+                    {
                         document.ways.push(finished.finish());
                     }
                     scope = Scope::Root;
@@ -166,7 +185,11 @@ struct WayBuild {
 impl WayBuild {
     fn finish(self) -> OsmWay {
         let tag = |key: &str| self.tags.get(key).cloned();
-        let flag = |key: &str| self.tags.get(key).is_some_and(|value| !matches!(value.as_str(), "no" | "false" | "0"));
+        let flag = |key: &str| {
+            self.tags
+                .get(key)
+                .is_some_and(|value| !matches!(value.as_str(), "no" | "false" | "0"))
+        };
         OsmWay {
             id: self.id,
             nodes: self.nodes,
@@ -185,7 +208,10 @@ impl WayBuild {
             motor_vehicle: tag("motor_vehicle"),
             motorcar: tag("motorcar"),
             service: tag("service"),
-            area: self.tags.get("area").is_some_and(|value| matches!(value.as_str(), "yes" | "true" | "1")),
+            area: self
+                .tags
+                .get("area")
+                .is_some_and(|value| matches!(value.as_str(), "yes" | "true" | "1")),
         }
     }
 }
@@ -208,8 +234,16 @@ impl RelationBuild {
             return None;
         }
         let restriction = self.tags.get("restriction")?.clone();
-        let from_way = self.members.iter().find(|member| member.role == "from" && member.kind == "way")?.reference;
-        let to_way = self.members.iter().find(|member| member.role == "to" && member.kind == "way")?.reference;
+        let from_way = self
+            .members
+            .iter()
+            .find(|member| member.role == "from" && member.kind == "way")?
+            .reference;
+        let to_way = self
+            .members
+            .iter()
+            .find(|member| member.role == "to" && member.kind == "way")?
+            .reference;
         let via_node = self
             .members
             .iter()
@@ -242,10 +276,18 @@ fn apply_tag(
     node_mini: &mut bool,
     node_junction: &mut bool,
 ) {
-    let Some(key) = attrs.iter().find(|(key, _)| key == "k").map(|(_, value)| value.clone()) else {
+    let Some(key) = attrs
+        .iter()
+        .find(|(key, _)| key == "k")
+        .map(|(_, value)| value.clone())
+    else {
         return;
     };
-    let Some(value) = attrs.iter().find(|(key, _)| key == "v").map(|(_, value)| value.clone()) else {
+    let Some(value) = attrs
+        .iter()
+        .find(|(key, _)| key == "v")
+        .map(|(_, value)| value.clone())
+    else {
         return;
     };
     match scope {
@@ -274,14 +316,21 @@ fn attributes(element: &quick_xml::events::BytesStart<'_>) -> Vec<(String, Strin
         .flatten()
         .map(|attr| {
             let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-            let value = attr.unescape_value().map(|text| text.into_owned()).unwrap_or_default();
+            let value = attr
+                .unescape_value()
+                .map(|text| text.into_owned())
+                .unwrap_or_default();
             (key, value)
         })
         .collect()
 }
 
 fn attr_string(attrs: &[(String, String)], name: &str) -> String {
-    attrs.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone()).unwrap_or_default()
+    attrs
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default()
 }
 
 fn attr_u64(attrs: &[(String, String)], name: &str) -> Option<u64> {

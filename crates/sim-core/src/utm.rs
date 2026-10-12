@@ -55,11 +55,11 @@ impl UtmProjection {
                 + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * EP2) * a.powi(5) / 120.0)
             + 500_000.0;
         let northing = K0
-            * (m
-                + n * tan_lat
-                    * (a * a / 2.0
-                        + (5.0 - t + 9.0 * c + 4.0 * c * c) * a.powi(4) / 24.0
-                        + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * EP2) * a.powi(6) / 720.0));
+            * (m + n
+                * tan_lat
+                * (a * a / 2.0
+                    + (5.0 - t + 9.0 * c + 4.0 * c * c) * a.powi(4) / 24.0
+                    + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * EP2) * a.powi(6) / 720.0));
         let northing = if self.northern {
             northing
         } else {
@@ -104,7 +104,9 @@ impl UtmProjection {
             - (n1 * tan1 / r1)
                 * (d * d / 2.0
                     - (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * EP2) * d.powi(4) / 24.0
-                    + (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1 - 252.0 * EP2 - 3.0 * c1 * c1)
+                    + (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1
+                        - 252.0 * EP2
+                        - 3.0 * c1 * c1)
                         * d.powi(6)
                         / 720.0);
         let lon = self.central_meridian_rad()
@@ -204,8 +206,12 @@ mod tests {
             lat_deg: 40.63,
         };
         let projection = UtmProjection::for_lonlat(start);
-        let projected = projection.forward(start).distance_to(projection.forward(end));
-        let arc = (meridional_arc(end.lat_deg.to_radians()) - meridional_arc(start.lat_deg.to_radians())).abs();
+        let projected = projection
+            .forward(start)
+            .distance_to(projection.forward(end));
+        let arc = (meridional_arc(end.lat_deg.to_radians())
+            - meridional_arc(start.lat_deg.to_radians()))
+        .abs();
         let relative = (projected - arc).abs() / arc;
         assert!(relative < 0.001, "relative length error {relative}");
     }

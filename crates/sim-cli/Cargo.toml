@@ -3,7 +3,7 @@ name = "sim-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Headless ingestion for the traffic simulation."
+description = "Headless ingestion and Monte Carlo experiments for the traffic simulation."
 
 [[bin]]
 name = "sim-cli"
@@ -12,4 +12,5 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 sim-core = { path = "../sim-core" }
+sim-engine = { path = "../sim-engine" }
 sim-ingest = { path = "../sim-ingest" }

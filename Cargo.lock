@@ -3363,6 +3363,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "sim-core",
+ "sim-engine",
  "sim-ingest",
 ]
 

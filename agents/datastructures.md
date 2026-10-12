@@ -11,7 +11,7 @@ crates/sim-core     graph, fundamental diagram, grades, turns, signals, demand p
 crates/sim-engine   discrete link-transmission step, spatial queues, signals, bounded-rationality routes
 crates/sim-ingest   OSM XML/PBF, presets, clip, contraction, compilation into sim-core::Network
 crates/sim-ipc      command DTOs, the viewport blob, and the per-frame link-state blob
-crates/sim-cli      headless ingestion (the batch runner arrives with the scenario engine)
+crates/sim-cli      headless ingestion and the paired Monte Carlo experiment
 src-tauri           Tauri v2 shell
 ui                  React / TypeScript / Tailwind research console
 ```
@@ -276,12 +276,15 @@ Bounded-rationality inertia is a property of the future router: a path is replac
 A `Scenario` does not mutate the compiled geometry. It stores:
 
 - signal schedule override: unchanged, force fixed cycle, or force flashing amber
-- optional replacement night window
+- optional replacement night window. When it is set, that window replaces each controller’s own night window for mode selection and for idle-step boundaries
+- `global_speed_scale` and `global_demand_scale`, both defaulting to 1
 - per-edge capacity scales (0 closes the link)
 - per-edge speed scales
 - per-zone demand scales
 
-`scaled_capacity` and `scaled_speed` multiply the edge’s adjusted base values by every matching scale, then clamp at zero. Missing entries scale by 1. A capacity scale of 0 closes the link: nothing enters and nothing leaves. Vehicles already aiming at it stay on the upstream link.
+`scaled_capacity` and `scaled_speed` multiply the edge’s adjusted base values by every matching scale, then clamp at zero. Speed is also multiplied by `global_speed_scale`. Missing per-edge entries scale by 1. `scale_factors` builds the same product once per edge for the routing and receiving passes. A capacity scale of 0 closes the link: nothing enters and nothing leaves. Vehicles already aiming at it stay on the upstream link.
+
+Closing lanes on the ring or motorway writes a capacity scale of `(lanes − closed) / lanes` onto edges whose class is motorway, motorway link, trunk, or trunk link, or whose name or ref contains `ring` or `περιφερ`. The polyline is unchanged. The desktop clamps a global speed scale to [0.2, 1.5], a demand multiplier to [0, 5], and a lane closure to at most 4.
 
 ## Time stepper
 
@@ -299,7 +302,7 @@ One step of length `Δt` is simultaneous, using the vehicle counts at the start 
 
 Fixed-cycle discharge is green and yellow for the approaches named on the active phase. Flashing amber and unsignalised nodes use class rank: approaches that share the highest incoming rank keep priority; every lower rank waits `tau_yield_s` and yields the step when a priority vehicle is already at the stop line. `Scenario::forced_mode` overrides the clock. The clock origin defaults to 12:00, so an unchanged controller is on its fixed cycle; the night window still selects flashing amber. The desktop session sets the origin to midnight so the scrubber and the signal clock are the same day.
 
-Each step adds `active × Δt` to vehicle-hours (VHT). A vehicle that leaves a link adds that link’s length to vehicle-kilometres (VKT) and `max(0, time_on_link − length / v)` to cumulative delay. The drawing sample for an edge is `v / v_free`: 1 when the edge is empty, otherwise free-flow time divided by `max(length / v, N / q)`, clamped to `[0, 1]`. Density is `N / S_max`. The queue count is the number of vehicles that have already spent their free-flow time and are still waiting to discharge. `Simulation::snapshot` copies that mutable state so the desktop thread can rewind without cloning the graph. A step with no due trip and no vehicle still in the network only advances the clock and the per-edge discharge remainder. Several such seconds collapse into one remainder update: an open approach adds `capacity × open seconds` and keeps the fractional part, and a seek splits that update where the night window changes the signal mode. The move, routing, and audit passes run once a trip is due.
+Each step adds `active × Δt` to vehicle-hours (VHT). A vehicle that leaves a link adds that link’s length to vehicle-kilometres (VKT) and `max(0, time_on_link − length / v)` to cumulative delay, and the same three quantities to that edge’s accumulators. Mean speed on an edge is distance divided by travel time once any vehicle has left it; otherwise the observation is unobserved. The drawing sample for an edge is `v / v_free`: 1 when the edge is empty, otherwise free-flow time divided by `max(length / v, N / q)`, clamped to `[0, 1]`. Density is `N / S_max`. The queue count is the number of vehicles that have already spent their free-flow time and are still waiting to discharge. `Simulation::snapshot` copies that mutable state so the desktop thread can rewind without cloning the graph. A step with no due trip and no vehicle still in the network only advances the clock and the per-edge discharge remainder. Several such seconds collapse into one remainder update: an open approach adds `capacity × open seconds` and keeps the fractional part, and a seek splits that update where the night window changes the signal mode. The move, routing, and audit passes run once a trip is due.
 
 Habitual routes are Dijkstra on free-flow time `length / v`, expanding only turns with `Turn.allowed`. At a decision (origin entry, or the downstream node of a departure) the driver compares the experienced cost of the remaining habitual path with `inertia *` its free-flow cost. Experienced cost of a link is `max(length / v, N / q)`, or infinity when `q = 0`. The default inertia is 1.4. A path is replaced only when that ratio is exceeded, and only by another finite path. Distinct shortest-path queries in a step run on a Rayon pool. Proposals for every node are also computed on that pool from the shared start-of-step snapshot; the merge applies every departure before every entry so a vehicle that just entered cannot be popped as if it had already queued.
 
@@ -343,6 +346,10 @@ JSON commands, camelCase fields:
 | `compiled_cache` | path of `data/cache/thessaloniki.simnet` when that file exists |
 | `open_simulation` | loads a cache onto the background simulation thread |
 | `simulation_control` | pause, speed multiplier, boundary veh/h, signal schedule, seek second |
+| `simulation_scenario` | global speed scale, demand multiplier, ring/motorway lanes closed |
+| `simulation_capture_baseline` | stores the current per-edge delay and mean speed as run A |
+| `simulation_restart` | rebuilds the run from midnight under the current scenario, keeping run A |
+| `simulation_diff` | binary comparison of run A with the live run |
 | `simulation_frame` | the latest frame blob, or empty when `since` is already current |
 | `simulation_status` | whether a session is publishing, and the last step error |
 
@@ -388,7 +395,33 @@ edge_count × density_ratio f32
 edge_count × queue_veh f32
 ```
 
-The header is 80 bytes. Edge order is the dense edge index, the same order as the viewport blob. A bottleneck row is present only when `queue_veh > 0`, at most eight, highest queue first. When link contents are unchanged, the publisher sets bit 2 and writes `edge_count = 0` with no columns. The webview keeps the previous speed, density, and queue buffers and still advances the clock from the header. A full frame is written on the first publish, whenever a vehicle enters or leaves a link, when a seek finishes, and on each stored visual sample. Boundary demand is a veh/h rate on the compiled gateway nodes. Zero emits nothing; it is not an origin-destination matrix. The desktop clock starts at midnight.
+Comparison blob, little-endian, magic `TSD1` (`0x54534431`), 36-byte header:
+
+```
+magic u32
+edge_count u32
+improved u32
+degraded u32
+neutral u32
+baseline_time_s f64    NaN when no baseline has been captured
+compared_time_s f64
+edge_count × class u8  0 neutral, 1 improved, 2 degraded
+```
+
+A link is neutral when both runs are unobserved and delay is about zero, or when the speed change stays inside 5% of free-flow (free-flow at least 1 m/s) and the delay change stays inside 1 second. The score is `Δspeed / v_free − Δdelay / 30`. Positive is improved (blue), negative is degraded (red), otherwise gray. Unobserved speed is treated as free-flow and unobserved delay as 0. The desktop refreshes this packet about four times a second while a baseline exists. The map replaces the congestion colours with these classes while A/B diff is on.
+
+The frame header is 80 bytes. Edge order is the dense edge index, the same order as the viewport blob. A bottleneck row is present only when `queue_veh > 0`, at most eight, highest queue first. When link contents are unchanged, the publisher sets bit 2 and writes `edge_count = 0` with no columns. The webview keeps the previous speed, density, and queue buffers and still advances the clock from the header. A full frame is written on the first publish, whenever a vehicle enters or leaves a link, when a seek finishes, and on each stored visual sample. Boundary demand is a veh/h rate on the compiled gateway nodes. Origins are entry gateways in the giant connected component that can reach an exit gateway under the turn-aware free-flow search. Destinations are exit gateways in that component. A sampled pair with no path is rejected and logged during demand generation and is not spawned. An exit-only cordon node is never used as an origin. Zero emits nothing; it is not an origin-destination matrix. The desktop clock starts at midnight.
+
+## Headless paired experiment
+
+`sim-cli experiment --headless` loads a compiled cache (default `data/cache/thessaloniki.simnet`) and runs two arms on a Rayon pool:
+
+- `baseline-24h-signals`: signal schedule forced to the fixed cycle for the whole horizon
+- `night-flashing`: schedule unchanged, night window 00:00–06:00 flashing amber
+
+Demand is the diurnal boundary instrument. Vehicles per hour in hour `h` are `daily_vehicles × global_demand_scale × hour_fraction[h]`, so a full day sums to the daily total. The default is 6 000 boundary vehicles over 86 400 seconds, counted only among pairs the router can path. Origins are entry gateways in the giant component and destinations are exit gateways in that component. A link shorter than one jam spacing has `storage_max_veh < 1` and cannot accept a whole vehicle, so its routing weight is infinite. Trips are not sent onto those connectors. A sampled pair that still has no path is rejected and logged instead of being spawned. This is not an origin-destination matrix. A seed repeats the same headways and destination pairing; the headway multiplier is `0.75 + 0.5 U`. Seeds are `config.seed + (arm << 32) + run`.
+
+The summary CSV has one row per arm and metric (`vht_h`, `vkt_km`, `delay_h`) with `n`, mean, unbiased variance, and a two-sided 95% Student-t interval. Degrees of freedom above 30 use 1.96; ten runs use 2.262. `runs.csv` is one row per seed. `links.csv` and `diff.bin` compare mean delay and mean speed per edge across the equal horizons.
 
 ## Invariants the tests lock
 

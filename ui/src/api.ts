@@ -39,6 +39,23 @@ export async function controlSimulation(control: SimulationControl): Promise<voi
   return invoke("simulation_control", { control });
 }
 
+export async function applyScenario(control: { speedScale?: number; demandScale?: number; lanesClosed?: number }): Promise<void> {
+  return invoke("simulation_scenario", { control });
+}
+
+export async function captureBaseline(): Promise<void> {
+  return invoke("simulation_capture_baseline");
+}
+
+export async function restartSimulation(): Promise<void> {
+  return invoke("simulation_restart");
+}
+
+export async function readDiff(): Promise<ArrayBuffer> {
+  const bytes = await invoke<ArrayBuffer>("simulation_diff");
+  return bytes;
+}
+
 export async function readFrame(since: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("simulation_frame", { since });
 }

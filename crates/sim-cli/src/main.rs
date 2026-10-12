@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use std::path::Path;
+
 use sim_core::{load_network, BBox};
 use sim_ingest::{default_data_dir, run, IngestRequest, IngestSource};
 
+mod experiment;
+
 #[derive(Parser)]
-#[command(name = "sim-cli", about = "Compile an OpenStreetMap extract into a traffic network cache.")]
+#[command(name = "sim-cli", about = "Compile a road network and run headless scenario experiments.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -31,6 +35,28 @@ enum Command {
     Summary {
         #[arg(long)]
         cache: PathBuf,
+    },
+    /// Compare baseline fixed signals with night flashing amber.
+    Experiment {
+        /// Run the paired Monte Carlo batch on the CPU pool.
+        #[arg(long)]
+        headless: bool,
+        #[arg(long, default_value_t = 10)]
+        runs: usize,
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Named city cache. `thessaloniki` loads `data/cache/thessaloniki.simnet`.
+        #[arg(long, default_value = "thessaloniki")]
+        preset: String,
+        #[arg(long, default_value = "data/experiments/phase4")]
+        output: PathBuf,
+        /// Boundary vehicles over the horizon, shaped by the diurnal profile. Not an OD matrix.
+        #[arg(long, default_value_t = 6000.0)]
+        daily_vehicles: f64,
+        #[arg(long, default_value_t = 86400.0)]
+        horizon_s: f64,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
     },
 }
 
@@ -89,6 +115,22 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
                 println!("warning: {warning}");
             }
         }
+        Command::Experiment {
+            headless,
+            runs,
+            cache,
+            preset,
+            output,
+            daily_vehicles,
+            horizon_s,
+            seed,
+        } => {
+            if !headless {
+                return Err("pass --headless to run the paired Monte Carlo batch".into());
+            }
+            let cache = cache.unwrap_or_else(|| cache_for_preset(&preset));
+            experiment::run_headless(&cache, &output, runs, daily_vehicles, horizon_s, seed)?;
+        }
         Command::Summary { cache } => {
             let network = load_network(&cache)?;
             let stats = &network.stats;
@@ -103,6 +145,18 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn cache_for_preset(preset: &str) -> PathBuf {
+    let name = format!("{preset}.simnet");
+    let candidates = [
+        PathBuf::from("data/cache").join(&name),
+        PathBuf::from("../data/cache").join(&name),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .unwrap_or_else(|| PathBuf::from("data/cache").join(name))
 }
 
 fn parse_bbox(text: &str) -> Result<BBox, String> {

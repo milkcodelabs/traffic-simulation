@@ -40,7 +40,7 @@ pub use road::{
     default_lanes, default_speed_mps, jam_density_per_lane, parse_highway, wave_speed_mps, RoadClass,
     PRIMARY_RANK,
 };
-pub use scenario::{scaled_capacity, scaled_speed, EdgeScale, Scenario, SignalSchedule, ZoneScale};
+pub use scenario::{scale_factors, scaled_capacity, scaled_speed, EdgeScale, Scenario, SignalSchedule, ZoneScale};
 pub use signal::{mode_label, plan_signal, Approach, Phase, SignalController, SignalMode, TAU_YIELD_S};
 pub use state::{storage_inflow_ceiling, LinkTransmissionState, CONSERVATION_EPSILON};
 pub use time::TimeWindow;

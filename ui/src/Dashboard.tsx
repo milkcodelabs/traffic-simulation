@@ -19,6 +19,21 @@ type Props = {
   signal: SignalMode;
   showQueue: boolean;
   spark: number[];
+  speedScale: number;
+  demandScale: number;
+  lanesClosed: number;
+  diffOn: boolean;
+  diffCounts: {
+    improved: number;
+    degraded: number;
+    neutral: number;
+    baselineS: number | null;
+    comparedS: number;
+    baselineVhtS: number | null;
+    baselineDelayS: number | null;
+    comparedVhtS: number | null;
+    comparedDelayS: number | null;
+  };
   onScrub: (value: number, commit: boolean) => void;
   onTogglePause: () => void;
   onSpeed: (value: number) => void;
@@ -26,6 +41,12 @@ type Props = {
   onSignal: (value: SignalMode) => void;
   onQueue: (value: boolean) => void;
   onCamera: (preset: "fit" | "city" | "centre") => void;
+  onSpeedScale: (value: number) => void;
+  onDemandScale: (value: number) => void;
+  onLanes: (value: number) => void;
+  onCapture: () => void;
+  onRestart: () => void;
+  onDiff: (value: boolean) => void;
 };
 
 export function Dashboard(props: Props) {
@@ -124,6 +145,20 @@ export function Dashboard(props: Props) {
             </button>
           ))}
         </div>
+        <ScenarioStudio
+          disabled={!props.desktop || !props.running}
+          speedScale={props.speedScale}
+          demandScale={props.demandScale}
+          lanesClosed={props.lanesClosed}
+          diffOn={props.diffOn}
+          counts={props.diffCounts}
+          onSpeedScale={props.onSpeedScale}
+          onDemandScale={props.onDemandScale}
+          onLanes={props.onLanes}
+          onCapture={props.onCapture}
+          onRestart={props.onRestart}
+          onDiff={props.onDiff}
+        />
         <p className="font-mono text-[0.68rem] text-[#8d8678]">
           view {props.viewFps} fps · stream {props.streamFps} fps
           {header ? ` · spawned ${format(header.spawned)}` : ""}
@@ -218,6 +253,134 @@ function Legend() {
         </li>
       ))}
     </ul>
+  );
+}
+
+function ScenarioStudio(props: {
+  disabled: boolean;
+  speedScale: number;
+  demandScale: number;
+  lanesClosed: number;
+  diffOn: boolean;
+  counts: {
+    improved: number;
+    degraded: number;
+    neutral: number;
+    baselineS: number | null;
+    comparedS: number;
+    baselineVhtS: number | null;
+    baselineDelayS: number | null;
+    comparedVhtS: number | null;
+    comparedDelayS: number | null;
+  };
+  onSpeedScale: (value: number) => void;
+  onDemandScale: (value: number) => void;
+  onLanes: (value: number) => void;
+  onCapture: () => void;
+  onRestart: () => void;
+  onDiff: (value: boolean) => void;
+}) {
+  return (
+    <section className="space-y-2 border-t border-[#2a3128] pt-3">
+      <p className="text-[0.68rem] tracking-[0.18em] text-[#a89878] uppercase">Scenario studio</p>
+      <label className="block text-sm text-[#d9d3c6]">
+        Speed scale {props.speedScale.toFixed(2)}
+        <input
+          type="range"
+          min={0.2}
+          max={1.5}
+          step={0.05}
+          value={props.speedScale}
+          disabled={props.disabled}
+          onChange={(event) => props.onSpeedScale(Number(event.target.value))}
+          className="mt-1 w-full accent-[#d7c4a1]"
+        />
+      </label>
+      <label className="block text-sm text-[#d9d3c6]">
+        Demand multiplier {props.demandScale.toFixed(2)}
+        <input
+          type="range"
+          min={0}
+          max={5}
+          step={0.1}
+          value={props.demandScale}
+          disabled={props.disabled}
+          onChange={(event) => props.onDemandScale(Number(event.target.value))}
+          className="mt-1 w-full accent-[#d7c4a1]"
+        />
+      </label>
+      <div className="flex gap-1">
+        {[0, 1, 2].map((lanes) => (
+          <button
+            key={lanes}
+            type="button"
+            data-lanes={lanes}
+            disabled={props.disabled}
+            onClick={() => props.onLanes(lanes)}
+            className={`flex-1 rounded px-2 py-1.5 text-sm ${props.lanesClosed === lanes ? "bg-[#d7c4a1] text-[#1b160f]" : "bg-[#232920] text-[#d9d3c6]"} disabled:opacity-50`}
+          >
+            {lanes === 0 ? "Lanes open" : `${lanes} closed`}
+          </button>
+        ))}
+      </div>
+      <p className="text-[0.68rem] text-[#8d8678]">Ring / motorway lanes closed. Geometry stays put.</p>
+      <div className="flex gap-1">
+        <button type="button" data-action="capture" disabled={props.disabled} onClick={props.onCapture} className="flex-1 rounded bg-[#232920] px-2 py-1.5 text-sm text-[#d9d3c6] disabled:opacity-50">
+          Set baseline
+        </button>
+        <button type="button" data-action="restart" disabled={props.disabled} onClick={props.onRestart} className="flex-1 rounded bg-[#232920] px-2 py-1.5 text-sm text-[#d9d3c6] disabled:opacity-50">
+          Rerun from midnight
+        </button>
+      </div>
+      <label className="flex items-center gap-2 text-sm text-[#d9d3c6]">
+        <input data-action="diff" type="checkbox" checked={props.diffOn} disabled={props.disabled} onChange={(event) => props.onDiff(event.target.checked)} />
+        A/B diff
+      </label>
+      <p className="font-mono text-[0.68rem] text-[#8d8678]" data-diff-counts>
+        blue {format(props.counts.improved)} · red {format(props.counts.degraded)} · gray {format(props.counts.neutral)}
+        {props.counts.baselineS === null ? "" : ` · baseline ${clockLabel(props.counts.baselineS)} · compared ${clockLabel(props.counts.comparedS)}`}
+      </p>
+      {props.diffOn && props.counts.baselineVhtS !== null && props.counts.comparedVhtS !== null && (
+        <dl className="grid grid-cols-2 gap-2 text-sm">
+          <div data-delta-vht={(props.counts.comparedVhtS - props.counts.baselineVhtS) / 3600}>
+            <dt className="text-xs text-[#8d8678]">Δ VHT</dt>
+            <dd className="font-mono text-[#f3efe4]">
+              {((props.counts.comparedVhtS - props.counts.baselineVhtS) / 3600).toFixed(2)} h
+            </dd>
+          </div>
+          <div
+            data-delta-delay={
+              props.counts.baselineDelayS !== null && props.counts.comparedDelayS !== null
+                ? (props.counts.comparedDelayS - props.counts.baselineDelayS) / 3600
+                : ""
+            }
+          >
+            <dt className="text-xs text-[#8d8678]">Δ Delay</dt>
+            <dd className="font-mono text-[#f3efe4]">
+              {props.counts.baselineDelayS !== null && props.counts.comparedDelayS !== null
+                ? `${((props.counts.comparedDelayS - props.counts.baselineDelayS) / 3600).toFixed(2)} h`
+                : "—"}
+            </dd>
+          </div>
+        </dl>
+      )}
+      {props.diffOn && (
+        <ul className="grid grid-cols-3 gap-1 text-xs text-[#d9d3c6]">
+          <li className="flex items-center gap-1">
+            <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: "#408cdc" }} />
+            Improved
+          </li>
+          <li className="flex items-center gap-1">
+            <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: "#cc4048" }} />
+            Degraded
+          </li>
+          <li className="flex items-center gap-1">
+            <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: "#969696" }} />
+            Neutral
+          </li>
+        </ul>
+      )}
+    </section>
   );
 }
 

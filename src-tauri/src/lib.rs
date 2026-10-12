@@ -135,6 +135,50 @@ fn simulation_control(state: State<AppState>, control: SimulationControl) -> Res
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScenarioControl {
+    speed_scale: Option<f64>,
+    demand_scale: Option<f64>,
+    lanes_closed: Option<u8>,
+}
+
+#[tauri::command]
+fn simulation_scenario(state: State<AppState>, control: ScenarioControl) -> Result<(), String> {
+    let slot = state.session.lock().map_err(|error| error.to_string())?;
+    let Some(session) = slot.as_ref() else {
+        return Err("Compile a network before running the simulation.".into());
+    };
+    session.apply_scenario(control.speed_scale, control.demand_scale, control.lanes_closed)
+}
+
+#[tauri::command]
+fn simulation_capture_baseline(state: State<AppState>) -> Result<(), String> {
+    let slot = state.session.lock().map_err(|error| error.to_string())?;
+    let Some(session) = slot.as_ref() else {
+        return Err("Compile a network before running the simulation.".into());
+    };
+    session.capture_baseline()
+}
+
+#[tauri::command]
+fn simulation_restart(state: State<AppState>) -> Result<(), String> {
+    let slot = state.session.lock().map_err(|error| error.to_string())?;
+    let Some(session) = slot.as_ref() else {
+        return Err("Compile a network before running the simulation.".into());
+    };
+    session.restart()
+}
+
+#[tauri::command]
+fn simulation_diff(state: State<AppState>) -> Result<Response, String> {
+    let slot = state.session.lock().map_err(|error| error.to_string())?;
+    let Some(session) = slot.as_ref() else {
+        return Ok(Response::new(Vec::new()));
+    };
+    Ok(Response::new(session.diff_packet()))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SimulationStatus {
@@ -189,6 +233,10 @@ pub fn run() {
             compiled_cache,
             open_simulation,
             simulation_control,
+            simulation_scenario,
+            simulation_capture_baseline,
+            simulation_restart,
+            simulation_diff,
             simulation_status,
             simulation_frame
         ])

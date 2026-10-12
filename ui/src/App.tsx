@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  applyScenario,
+  captureBaseline,
   chooseOsmFile,
   compiledCache,
   controlSimulation,
@@ -8,12 +10,14 @@ import {
   listPresets,
   loadGeometry,
   openSimulation,
+  readDiff,
   readFrame,
+  restartSimulation,
   simulationStatus,
   type SimulationControl,
 } from "./api";
 import { Dashboard } from "./Dashboard";
-import { decodeFrame, type Bottleneck, type FrameHeader } from "./frame";
+import { decodeDiff, decodeFrame, type Bottleneck, type FrameHeader } from "./frame";
 import { NetworkMap, type MapHandle } from "./NetworkMap";
 import { decodeViewport, type BBox, type IngestReport, type Preset } from "./protocol";
 
@@ -46,6 +50,21 @@ export function App() {
   const [signal, setSignal] = useState<"clock" | "fixed" | "flashing">("clock");
   const [showQueue, setShowQueue] = useState(true);
   const [spark, setSpark] = useState<number[]>([]);
+  const [speedScale, setSpeedScale] = useState(1);
+  const [demandScale, setDemandScale] = useState(1);
+  const [lanesClosed, setLanesClosed] = useState(0);
+  const [diffOn, setDiffOn] = useState(false);
+  const [diffCounts, setDiffCounts] = useState({
+    improved: 0,
+    degraded: 0,
+    neutral: 0,
+    baselineS: null as number | null,
+    comparedS: 0,
+    baselineVhtS: null as number | null,
+    baselineDelayS: null as number | null,
+    comparedVhtS: null as number | null,
+    comparedDelayS: null as number | null,
+  });
   const mapRef = useRef<MapHandle>(null);
   const dragging = useRef(false);
   const seen = useRef<FrameHeader | null>(null);
@@ -88,6 +107,50 @@ export function App() {
       setScrub(header.timeS % 86400);
     }
   }, [header]);
+
+  useEffect(() => {
+    if (!desktop || !running || !diffOn) {
+      mapRef.current?.setDiff(null);
+      return;
+    }
+    let stop = false;
+    const pull = () => {
+      if (stop) {
+        return;
+      }
+      readDiff()
+        .then((bytes) => {
+          if (stop || bytes.byteLength < 36) {
+            return;
+          }
+          const packet = decodeDiff(bytes);
+          mapRef.current?.setDiff(packet.classes);
+          setDiffCounts({
+            improved: packet.improved,
+            degraded: packet.degraded,
+            neutral: packet.neutral,
+            baselineS: packet.baselineS,
+            comparedS: packet.comparedS,
+            baselineVhtS: packet.baselineVhtS,
+            baselineDelayS: packet.baselineDelayS,
+            comparedVhtS: packet.comparedVhtS,
+            comparedDelayS: packet.comparedDelayS,
+          });
+        })
+        .catch((reason: unknown) => {
+          if (!stop) {
+            setError(message(reason));
+          }
+        });
+    };
+    pull();
+    const timer = window.setInterval(pull, 400);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+      mapRef.current?.setDiff(null);
+    };
+  }, [desktop, running, diffOn]);
 
   useEffect(() => {
     if (!desktop || !running) {
@@ -297,6 +360,31 @@ export function App() {
         }}
         onQueue={setShowQueue}
         onCamera={(preset) => mapRef.current?.camera(preset)}
+        speedScale={speedScale}
+        demandScale={demandScale}
+        lanesClosed={lanesClosed}
+        diffOn={diffOn}
+        diffCounts={diffCounts}
+        onSpeedScale={(value) => {
+          setSpeedScale(value);
+          void applyScenario({ speedScale: value }).catch((reason: unknown) => setError(message(reason)));
+        }}
+        onDemandScale={(value) => {
+          setDemandScale(value);
+          void applyScenario({ demandScale: value }).catch((reason: unknown) => setError(message(reason)));
+        }}
+        onLanes={(value) => {
+          setLanesClosed(value);
+          void applyScenario({ lanesClosed: value }).catch((reason: unknown) => setError(message(reason)));
+        }}
+        onCapture={() => {
+          void captureBaseline().catch((reason: unknown) => setError(message(reason)));
+        }}
+        onRestart={() => {
+          setScrub(0);
+          void restartSimulation().catch((reason: unknown) => setError(message(reason)));
+        }}
+        onDiff={setDiffOn}
       />
       <aside className="absolute top-4 left-4 z-10 flex max-h-[calc(100%-6.5rem)] w-[22.5rem] flex-col gap-4 overflow-auto rounded-md border border-[#2a3128] bg-[#161c14]/95 p-4 shadow-2xl backdrop-blur">
         <header>

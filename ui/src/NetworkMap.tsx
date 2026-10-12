@@ -2,7 +2,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import { PathLayer } from "@deck.gl/layers";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import maplibregl, { type GeoJSONSource, type Map } from "maplibre-gl";
-import { congestionColor, queueColor } from "./frame";
+import { congestionColor, diffColor, queueColor } from "./frame";
 
 const WHITE_TOWER: [number, number] = [22.9484, 40.6264];
 
@@ -16,6 +16,7 @@ export type CameraPreset = "fit" | "city" | "centre";
 
 export type MapHandle = {
   setFields: (speed: Float32Array, density: Float32Array) => void;
+  setDiff: (classes: Uint8Array | null) => void;
   camera: (preset: CameraPreset) => void;
 };
 
@@ -32,6 +33,7 @@ export const NetworkMap = forwardRef<MapHandle, Props>(function NetworkMap({ cen
   const pathsRef = useRef<RoadPath[]>([]);
   const speedRef = useRef<Float32Array | null>(null);
   const densityRef = useRef<Float32Array | null>(null);
+  const diffRef = useRef<Uint8Array | null>(null);
   const showQueueRef = useRef(showQueue);
   const versionRef = useRef(0);
   const dataRef = useRef(data);
@@ -45,7 +47,12 @@ export const NetworkMap = forwardRef<MapHandle, Props>(function NetworkMap({ cen
       speedRef.current = speed;
       densityRef.current = density;
       versionRef.current += 1;
-      paint(overlayRef.current, pathsRef.current, speedRef.current, densityRef.current, showQueueRef.current, versionRef.current);
+      paint(overlayRef.current, pathsRef.current, speedRef.current, densityRef.current, diffRef.current, showQueueRef.current, versionRef.current);
+    },
+    setDiff(classes) {
+      diffRef.current = classes;
+      versionRef.current += 1;
+      paint(overlayRef.current, pathsRef.current, speedRef.current, densityRef.current, diffRef.current, showQueueRef.current, versionRef.current);
     },
     camera(preset) {
       const map = mapRef.current;
@@ -94,7 +101,7 @@ export const NetworkMap = forwardRef<MapHandle, Props>(function NetworkMap({ cen
         },
       });
       if (dataRef.current) {
-        publishRoads(map, overlay, dataRef.current, pathsRef, versionRef, speedRef.current, densityRef.current, showQueueRef.current);
+        publishRoads(map, overlay, dataRef.current, pathsRef, versionRef, speedRef.current, densityRef.current, diffRef.current, showQueueRef.current);
       }
     });
     mapRef.current = map;
@@ -114,7 +121,7 @@ export const NetworkMap = forwardRef<MapHandle, Props>(function NetworkMap({ cen
     if (!map || !overlay || !data) {
       return;
     }
-    const apply = () => publishRoads(map, overlay, data, pathsRef, versionRef, speedRef.current, densityRef.current, showQueueRef.current);
+    const apply = () => publishRoads(map, overlay, data, pathsRef, versionRef, speedRef.current, densityRef.current, diffRef.current, showQueueRef.current);
     if (map.isStyleLoaded()) {
       apply();
     } else {
@@ -124,7 +131,7 @@ export const NetworkMap = forwardRef<MapHandle, Props>(function NetworkMap({ cen
 
   useEffect(() => {
     versionRef.current += 1;
-    paint(overlayRef.current, pathsRef.current, speedRef.current, densityRef.current, showQueue, versionRef.current);
+    paint(overlayRef.current, pathsRef.current, speedRef.current, densityRef.current, diffRef.current, showQueue, versionRef.current);
   }, [showQueue]);
 
   return <div ref={container} className="absolute inset-0 h-full w-full" style={{ position: "absolute", inset: 0 }} />;
@@ -138,13 +145,14 @@ function publishRoads(
   versionRef: { current: number },
   speed: Float32Array | null,
   density: Float32Array | null,
+  diff: Uint8Array | null,
   showQueue: boolean,
 ) {
   const source = map.getSource("network") as GeoJSONSource | undefined;
   source?.setData(data);
   pathsRef.current = roadPaths(data);
   versionRef.current += 1;
-  paint(overlay, pathsRef.current, speed, density, showQueue, versionRef.current);
+  paint(overlay, pathsRef.current, speed, density, diff, showQueue, versionRef.current);
   fit(map, data);
 }
 
@@ -169,6 +177,7 @@ function paint(
   paths: RoadPath[],
   speed: Float32Array | null,
   density: Float32Array | null,
+  diff: Uint8Array | null,
   showQueue: boolean,
   version: number,
 ) {
@@ -198,7 +207,7 @@ function paint(
         visible: paths.length > 0,
         pickable: false,
         getPath: (road) => road.path,
-        getColor: (road) => congestionColor(speed?.[road.index] ?? 1),
+        getColor: (road) => (diff ? diffColor(diff[road.index] ?? 0) : congestionColor(speed?.[road.index] ?? 1)),
         getWidth: (road) => 1.4 + road.lanes * 0.9,
         widthUnits: "pixels",
         widthMinPixels: 1,

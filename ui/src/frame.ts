@@ -115,6 +115,56 @@ export function queueColor(density: number): [number, number, number, number] {
   return [110, 30, 51, Math.min(255, alpha + 20)];
 }
 
+export type DiffPacket = {
+  improved: number;
+  degraded: number;
+  neutral: number;
+  baselineS: number | null;
+  comparedS: number;
+  baselineVhtS: number | null;
+  baselineDelayS: number | null;
+  comparedVhtS: number | null;
+  comparedDelayS: number | null;
+  classes: Uint8Array;
+};
+
+function finiteOrNull(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+
+export function decodeDiff(buffer: ArrayBuffer): DiffPacket {
+  const view = new DataView(buffer);
+  if (buffer.byteLength < 36 || view.getUint32(0, true) !== 0x54534431) {
+    throw new Error("comparison packet is not a traffic diff");
+  }
+  const edges = view.getUint32(4, true);
+  const baseline = view.getFloat64(20, true);
+  const metricsAt = 36 + edges;
+  const hasMetrics = buffer.byteLength >= metricsAt + 32;
+  return {
+    improved: view.getUint32(8, true),
+    degraded: view.getUint32(12, true),
+    neutral: view.getUint32(16, true),
+    baselineS: Number.isFinite(baseline) ? baseline : null,
+    comparedS: view.getFloat64(28, true),
+    baselineVhtS: hasMetrics ? finiteOrNull(view.getFloat64(metricsAt, true)) : null,
+    baselineDelayS: hasMetrics ? finiteOrNull(view.getFloat64(metricsAt + 8, true)) : null,
+    comparedVhtS: hasMetrics ? finiteOrNull(view.getFloat64(metricsAt + 16, true)) : null,
+    comparedDelayS: hasMetrics ? finiteOrNull(view.getFloat64(metricsAt + 24, true)) : null,
+    classes: new Uint8Array(buffer, 36, edges),
+  };
+}
+
+export function diffColor(kind: number): [number, number, number, number] {
+  if (kind === 1) {
+    return [64, 140, 220, 230];
+  }
+  if (kind === 2) {
+    return [204, 64, 72, 235];
+  }
+  return [150, 150, 150, 80];
+}
+
 export function clockLabel(seconds: number) {
   const wrapped = ((Math.floor(seconds) % 86400) + 86400) % 86400;
   const hours = Math.floor(wrapped / 3600);

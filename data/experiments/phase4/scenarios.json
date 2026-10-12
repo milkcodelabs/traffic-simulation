@@ -1,0 +1,5 @@
+{
+  "baseline": {"name": "baseline-24h-signals", "signalSchedule": "forceFixed"},
+  "intervention": {"name": "night-flashing", "signalSchedule": "unchanged", "nightFlashing": {"startS": 0, "endS": 21600}},
+  "demand": "diurnal boundary vehicles at compiled gateways, not an origin-destination matrix"
+}

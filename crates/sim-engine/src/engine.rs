@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rayon::prelude::*;
 use sim_core::{
-    scaled_capacity, storage_inflow_ceiling, EdgeId, LinkTransmissionState, Network, NodeId, Scenario,
-    SignalController, SignalMode, SignalSchedule, TAU_YIELD_S, TimeWindow,
+    scaled_capacity, scaled_speed, storage_inflow_ceiling, EdgeId, LinkTransmissionState, Network, NodeId, Scenario,
+    SignalController, SignalMode, TAU_YIELD_S,
 };
 use thiserror::Error;
 
@@ -55,6 +56,8 @@ pub struct Vehicle {
     /// Free-flow time of the path the driver currently expects, from the last decision node.
     pub baseline_s: f64,
     pub inertia: f64,
+    /// Simulation time of the last alternate-path search. A blocked driver does not search again immediately.
+    route_checked_s: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +129,40 @@ struct NodeProposal {
     entries: Vec<Entry>,
     credits: Vec<(usize, f64)>,
     demand: Vec<(usize, u32)>,
+    route_checks: Vec<u64>,
+    kept_paths: Vec<(u64, Vec<EdgeId>, f64, f64)>,
+    /// Nanoseconds spent inside shortest-path search while building this proposal.
+    route_ns: u128,
+    /// Nanoseconds spent settling signal discharge credits.
+    signal_ns: u128,
+    searches: u32,
+    reroutes: u32,
+}
+
+/// Accumulated over the first thousand `step` calls, then printed once.
+#[derive(Clone, Copy, Default)]
+struct StepProfile {
+    routing_ns: u128,
+    weights_ns: u128,
+    link_ns: u128,
+    signals_ns: u128,
+    recording_ns: u128,
+    ticks: u64,
+    busy_ticks: u64,
+    printed: bool,
+}
+
+/// Per-edge record of vehicles that have left the link. An unobserved speed is NaN.
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeObservation {
+    pub delay_s: f64,
+    pub mean_speed_mps: f64,
+}
+
+impl EdgeObservation {
+    pub fn observed(self) -> bool {
+        self.mean_speed_mps.is_finite()
+    }
 }
 
 /// Mutable stepper state, without the shared graph. A desktop session keeps these so a
@@ -147,6 +184,12 @@ pub struct SimSnapshot {
     pub vht_s: f64,
     pub vkt_m: f64,
     pub delay_s: f64,
+    pub edge_delay_s: Vec<f64>,
+    pub edge_travel_s: Vec<f64>,
+    pub edge_distance_m: Vec<f64>,
+    /// Simulation time through which `discharge_credit` has been brought forward.
+    /// Edges that nobody has tried to leave stay behind the clock and catch up on the next discharge.
+    pub credit_at: Vec<f64>,
 }
 
 /// Mesoscopic link-transmission / spatial-queue stepper.
@@ -172,9 +215,36 @@ pub struct Simulation {
     vkt_m: f64,
     /// Extra seconds spent on a link beyond its free-flow time, summed at departure.
     delay_s: f64,
+    edge_delay_s: Vec<f64>,
+    edge_travel_s: Vec<f64>,
+    edge_distance_m: Vec<f64>,
     /// Bumps when a vehicle enters or leaves a link, which is when the drawn speeds can change.
     appearance: u64,
+    /// Time through which each link's discharge remainder is current.
+    credit_at: Vec<f64>,
+    /// Traversal cost used by rerouting. Rebuilt for an edge only when its queue length changes.
+    experienced: Vec<f64>,
+    /// Edge indexes whose queues are non-empty.
+    occupied: Vec<u32>,
+    occupied_pos: Vec<u32>,
+    /// Node indexes with at least one waiting vehicle.
+    active_waiting: Vec<u32>,
+    waiting_pos: Vec<u32>,
+    /// Edges that emptied during the current apply and still need a conservation check.
+    just_emptied: Vec<u32>,
+    demand: Vec<u32>,
+    demand_touched: Vec<u32>,
+    busy_ids: Vec<u32>,
+    step_profile: StepProfile,
+    route_searches: u64,
+    reroute_searches: u64,
+    rejected_trips: u64,
 }
+
+/// A driver who already searched does not search again until this many seconds have passed.
+const REROUTE_COOLDOWN_S: f64 = 90.0;
+/// Trips with less than this much path left stay on the current sequence of links.
+const REROUTE_MIN_REMAINING_M: f64 = 300.0;
 
 impl Simulation {
     pub fn new(network: Network, scenario: Scenario) -> Self {
@@ -189,6 +259,7 @@ impl Simulation {
         let edges = network.edges.len();
         let nodes = network.nodes.len();
         let free_flow = free_flow_weights(&network, &scenario);
+        let experienced = experienced_weights(&network, &scenario, &LinkQueues::new(edges));
         Self {
             network,
             scenario,
@@ -206,12 +277,31 @@ impl Simulation {
             vht_s: 0.0,
             vkt_m: 0.0,
             delay_s: 0.0,
+            edge_delay_s: vec![0.0; edges],
+            edge_travel_s: vec![0.0; edges],
+            edge_distance_m: vec![0.0; edges],
             appearance: 0,
+            credit_at: vec![0.0; edges],
+            experienced,
+            occupied: Vec::new(),
+            occupied_pos: vec![u32::MAX; edges],
+            active_waiting: Vec::new(),
+            waiting_pos: vec![u32::MAX; nodes],
+            just_emptied: Vec::new(),
+            demand: vec![0; edges],
+            demand_touched: Vec::new(),
+            busy_ids: Vec::new(),
+            step_profile: StepProfile::default(),
+            route_searches: 0,
+            reroute_searches: 0,
+            rejected_trips: 0,
         }
     }
 
     pub fn restore(network: Arc<Network>, snap: SimSnapshot) -> Self {
-        Self {
+        let edges = snap.queues.len();
+        let nodes = snap.waiting.len();
+        let mut sim = Self {
             network,
             scenario: snap.scenario,
             clock_origin_s: snap.clock_origin_s,
@@ -228,14 +318,37 @@ impl Simulation {
             vht_s: snap.vht_s,
             vkt_m: snap.vkt_m,
             delay_s: snap.delay_s,
+            edge_delay_s: snap.edge_delay_s,
+            edge_travel_s: snap.edge_travel_s,
+            edge_distance_m: snap.edge_distance_m,
             appearance: 0,
-        }
+            credit_at: snap.credit_at,
+            experienced: Vec::new(),
+            occupied: Vec::new(),
+            occupied_pos: vec![u32::MAX; edges],
+            active_waiting: Vec::new(),
+            waiting_pos: vec![u32::MAX; nodes],
+            just_emptied: Vec::new(),
+            demand: vec![0; edges],
+            demand_touched: Vec::new(),
+            busy_ids: Vec::new(),
+            step_profile: StepProfile::default(),
+            route_searches: 0,
+            reroute_searches: 0,
+            rejected_trips: 0,
+        };
+        sim.rebuild_routing_state();
+        sim
     }
 
     /// Changes only when link contents change. The desktop thread uses it to avoid
     /// rebuilding an identical congestion picture.
     pub fn appearance(&self) -> u64 {
         self.appearance
+    }
+
+    pub fn invalidate_picture(&mut self) {
+        self.appearance = self.appearance.wrapping_add(1);
     }
 
     pub fn snapshot(&self) -> SimSnapshot {
@@ -255,7 +368,62 @@ impl Simulation {
             vht_s: self.vht_s,
             vkt_m: self.vkt_m,
             delay_s: self.delay_s,
+            edge_delay_s: self.edge_delay_s.clone(),
+            edge_travel_s: self.edge_travel_s.clone(),
+            edge_distance_m: self.edge_distance_m.clone(),
+            credit_at: self.credit_at.clone(),
         }
+    }
+
+    pub fn scenario(&self) -> &Scenario {
+        &self.scenario
+    }
+
+    pub fn free_flow_mps(&self, index: usize) -> f64 {
+        let travel = self.free_flow.get(index).copied().unwrap_or(f64::INFINITY);
+        let length = self.network.edges.get(index).map(|edge| edge.length_m).unwrap_or(0.0);
+        if travel.is_finite() && travel > 1e-9 {
+            length / travel
+        } else {
+            0.0
+        }
+    }
+
+    pub fn recompute_free_flow(&mut self) {
+        self.free_flow = free_flow_weights(&self.network, &self.scenario);
+        self.experienced = experienced_weights(&self.network, &self.scenario, &self.queues);
+    }
+
+    fn rebuild_routing_state(&mut self) {
+        self.experienced = experienced_weights(&self.network, &self.scenario, &self.queues);
+        self.occupied.clear();
+        self.active_waiting.clear();
+        for (index, queue) in self.queues.queues.iter().enumerate() {
+            if !queue.is_empty() {
+                self.occupied_pos[index] = self.occupied.len() as u32;
+                self.occupied.push(index as u32);
+            }
+        }
+        for (index, bucket) in self.waiting.iter().enumerate() {
+            if !bucket.is_empty() {
+                self.waiting_pos[index] = self.active_waiting.len() as u32;
+                self.active_waiting.push(index as u32);
+            }
+        }
+    }
+
+    pub fn observations(&self) -> Vec<EdgeObservation> {
+        self.edge_travel_s
+            .iter()
+            .enumerate()
+            .map(|(index, travel)| {
+                let distance = self.edge_distance_m[index];
+                EdgeObservation {
+                    delay_s: self.edge_delay_s[index],
+                    mean_speed_mps: if *travel > 1e-9 { distance / travel } else { f64::NAN },
+                }
+            })
+            .collect()
     }
 
     pub fn network(&self) -> &Network {
@@ -286,6 +454,18 @@ impl Simulation {
 
     pub fn delay_s(&self) -> f64 {
         self.delay_s
+    }
+
+    pub fn route_searches(&self) -> u64 {
+        self.route_searches
+    }
+
+    pub fn reroute_searches(&self) -> u64 {
+        self.reroute_searches
+    }
+
+    pub fn rejected_trips(&self) -> u64 {
+        self.rejected_trips
     }
 
     /// Length-weighted instantaneous speed. An empty link contributes its free-flow speed.
@@ -384,8 +564,16 @@ impl Simulation {
     }
 
     pub fn census(&self) -> Census {
-        let on_links = self.queues.queues.iter().map(|queue| queue.len() as u64).sum();
-        let waiting = self.waiting.iter().map(|queue| queue.len() as u64).sum();
+        let on_links = self
+            .occupied
+            .iter()
+            .map(|edge| self.queues.queues[*edge as usize].len() as u64)
+            .sum();
+        let waiting = self
+            .active_waiting
+            .iter()
+            .map(|node| self.waiting[*node as usize].len() as u64)
+            .sum();
         Census {
             spawned: self.spawned,
             active: on_links + waiting,
@@ -418,23 +606,235 @@ impl Simulation {
         let t1 = self.time_s + dt;
         let trip_due = self.pending.first().is_some_and(|trip| trip.depart_s <= t1);
         if !trip_due && self.spawned == self.completed {
-            self.tick_idle_credits(dt);
             self.time_s = t1;
+            self.record_profile(0, 0, 0, 0, 0, false);
             return Ok(());
         }
+        let clock = Instant::now();
         self.release(t1);
-        let active_during = self.census().active as f64;
-        let experienced = experienced_weights(&self.network, &self.scenario, &self.queues);
-        let rooms = self.receiving_rooms();
-        let node_count = self.network.nodes.len();
-        let proposals: Vec<NodeProposal> = (0..node_count)
-            .into_par_iter()
-            .map(|node| self.propose(node, dt, t1, &experienced, &rooms))
-            .collect();
+        let mut routing_ns = clock.elapsed().as_nanos();
+        let active_during = self.spawned.saturating_sub(self.completed) as f64;
+        let clock = Instant::now();
+        self.collect_busy(t1);
+        let mut link_ns = clock.elapsed().as_nanos();
+        if self.busy_ids.is_empty() {
+            self.time_s = t1;
+            self.vht_s += active_during * dt;
+            self.record_profile(routing_ns, 0, link_ns, 0, 0, false);
+            return Ok(());
+        }
+        let nodes = self.busy_ids.clone();
+        let clock = Instant::now();
+        let proposals: Vec<NodeProposal> = if nodes.len() < 64 {
+            nodes.iter().map(|node| self.propose(*node as usize, dt, t1)).collect()
+        } else {
+            nodes.par_iter().map(|node| self.propose(*node as usize, dt, t1)).collect()
+        };
+        let propose_ns = clock.elapsed().as_nanos();
+        let route_ns: u128 = proposals.iter().map(|proposal| proposal.route_ns).sum();
+        let signal_ns: u128 = proposals.iter().map(|proposal| proposal.signal_ns).sum();
+        self.route_searches += proposals.iter().map(|proposal| u64::from(proposal.searches)).sum::<u64>();
+        self.reroute_searches += proposals.iter().map(|proposal| u64::from(proposal.reroutes)).sum::<u64>();
+        routing_ns += route_ns;
+        link_ns += propose_ns.saturating_sub(route_ns.saturating_add(signal_ns));
+        let clock = Instant::now();
         self.apply(&proposals, t1);
+        link_ns += clock.elapsed().as_nanos();
+        let clock = Instant::now();
         self.time_s = t1;
         self.vht_s += active_during * dt;
-        self.audit()
+        let result = self.audit();
+        let recording_ns = clock.elapsed().as_nanos();
+        self.record_profile(routing_ns, 0, link_ns, signal_ns, recording_ns, true);
+        result
+    }
+
+    fn record_profile(
+        &mut self,
+        routing_ns: u128,
+        weights_ns: u128,
+        link_ns: u128,
+        signals_ns: u128,
+        recording_ns: u128,
+        busy: bool,
+    ) {
+        let profile = &mut self.step_profile;
+        if profile.printed {
+            return;
+        }
+        profile.routing_ns += routing_ns;
+        profile.weights_ns += weights_ns;
+        profile.link_ns += link_ns;
+        profile.signals_ns += signals_ns;
+        profile.recording_ns += recording_ns;
+        profile.ticks += 1;
+        if busy {
+            profile.busy_ticks += 1;
+        }
+        if profile.ticks < 1000 {
+            return;
+        }
+        profile.printed = true;
+        let total = profile.routing_ns + profile.link_ns + profile.signals_ns + profile.recording_ns;
+        let seconds = total as f64 / 1e9;
+        let rate = 1000.0 / seconds.max(1e-9);
+        let search_ns = profile.routing_ns.saturating_sub(profile.weights_ns);
+        eprintln!(
+            "profile 1000 ticks in {seconds:.3}s  {rate:.1} ticks/s  busy {busy}\n  time_routing {routing:.3}s  (weights {weights:.3}s  searches {search:.3}s)\n  time_link_dynamics {link:.3}s\n  time_signals {signals:.3}s\n  time_recording {recording:.3}s",
+            busy = profile.busy_ticks,
+            routing = profile.routing_ns as f64 / 1e9,
+            weights = profile.weights_ns as f64 / 1e9,
+            search = search_ns as f64 / 1e9,
+            link = profile.link_ns as f64 / 1e9,
+            signals = profile.signals_ns as f64 / 1e9,
+            recording = profile.recording_ns as f64 / 1e9,
+        );
+    }
+
+    /// A node is busy only when a vehicle can enter or leave it during this step.
+    /// A vehicle still covering its free-flow time does not make the downstream node busy.
+    fn collect_busy(&mut self, t1: f64) {
+        self.busy_ids.clear();
+        for &node in &self.active_waiting {
+            let due = self.waiting[node as usize]
+                .iter()
+                .any(|id| self.vehicles[*id as usize].depart_s <= t1);
+            if due {
+                self.busy_ids.push(node);
+            }
+        }
+        for &edge in &self.occupied {
+            let Some(id) = self.queues.queues[edge as usize].front().copied() else {
+                continue;
+            };
+            let head = self.network.edges[edge as usize].to;
+            if self.ready_time(&self.vehicles[id as usize], EdgeId(edge), head) <= t1 {
+                self.busy_ids.push(head.index() as u32);
+            }
+        }
+        self.busy_ids.sort_unstable();
+        self.busy_ids.dedup();
+    }
+
+    fn push_waiting(&mut self, node: usize, id: u64) {
+        if self.waiting[node].is_empty() {
+            self.waiting_pos[node] = self.active_waiting.len() as u32;
+            self.active_waiting.push(node as u32);
+        }
+        self.waiting[node].push(id);
+    }
+
+    fn unmark_waiting(&mut self, node: usize) {
+        let pos = self.waiting_pos[node];
+        if pos == u32::MAX {
+            return;
+        }
+        let last = self.active_waiting.pop().expect("waiting mark");
+        if last as usize != node {
+            self.active_waiting[pos as usize] = last;
+            self.waiting_pos[last as usize] = pos;
+        }
+        self.waiting_pos[node] = u32::MAX;
+    }
+
+    fn occupy(&mut self, index: usize) {
+        if self.occupied_pos[index] != u32::MAX {
+            return;
+        }
+        self.occupied_pos[index] = self.occupied.len() as u32;
+        self.occupied.push(index as u32);
+    }
+
+    fn vacate(&mut self, index: usize) {
+        let pos = self.occupied_pos[index];
+        if pos == u32::MAX {
+            return;
+        }
+        let last = self.occupied.pop().expect("occupied mark");
+        if last as usize != index {
+            self.occupied[pos as usize] = last;
+            self.occupied_pos[last as usize] = pos;
+        }
+        self.occupied_pos[index] = u32::MAX;
+    }
+
+    fn enqueue(&mut self, index: usize, vehicle: u64) {
+        let was_empty = self.queues.queues[index].is_empty();
+        self.queues.queues[index].push_back(vehicle);
+        if was_empty {
+            self.occupy(index);
+        }
+        self.refresh_weight(index);
+    }
+
+    fn refresh_weight(&mut self, index: usize) {
+        let edge = &self.network.edges[index];
+        let id = EdgeId(index as u32);
+        let speed = scaled_speed(edge.free_flow_speed_mps, id, &self.scenario);
+        let capacity = scaled_capacity(edge.capacity_veh_per_s, id, &self.scenario);
+        self.experienced[index] = if speed <= 1e-9 || capacity <= 1e-12 {
+            f64::INFINITY
+        } else {
+            let free = edge.length_m / speed;
+            let discharge = self.queues.queues[index].len() as f64 / capacity;
+            free.max(discharge)
+        };
+    }
+
+    fn edge_room(&self, index: usize) -> u32 {
+        let edge = &self.network.edges[index];
+        let capacity = scaled_capacity(edge.capacity_veh_per_s, EdgeId(index as u32), &self.scenario);
+        if capacity <= 1e-12 {
+            return 0;
+        }
+        let occupied = self.queues.queues[index].len() as f64;
+        storage_inflow_ceiling(edge.storage_max_veh, occupied).floor() as u32
+    }
+
+    /// Discharge remainder an empty approach would hold at `until`, catching up skipped seconds.
+    fn credit_settled(&self, index: usize, until: f64) -> f64 {
+        let mut credit = self.discharge_credit[index];
+        let mut at = self.credit_at[index];
+        if until <= at + 1e-12 {
+            return credit;
+        }
+        let capacity = self.edge_capacity(index, self.scenario.edge_capacity_scale.is_empty());
+        if capacity <= 1e-12 {
+            return credit;
+        }
+        let edge = EdgeId(index as u32);
+        let head = self.network.edges[index].to;
+        while at + 1.0 <= until + 1e-9 {
+            if self.idle_open(head, edge, at) {
+                let offered = credit + capacity;
+                credit = offered - offered.floor();
+            }
+            at += 1.0;
+        }
+        let frac = until - at;
+        if frac > 1e-8 && self.idle_open(head, edge, at) {
+            let offered = credit + capacity * frac;
+            credit = offered - offered.floor();
+        }
+        credit
+    }
+
+    fn idle_open(&self, node: NodeId, edge: EdgeId, time_s: f64) -> bool {
+        match self.control_at(node, time_s) {
+            NodeControl::Fixed => self.phase_open_at(node, edge, time_s),
+            NodeControl::Priority => true,
+        }
+    }
+
+    fn control_at(&self, node: NodeId, time_s: f64) -> NodeControl {
+        let Some(signal_id) = self.network.nodes[node.index()].signal else {
+            return NodeControl::Priority;
+        };
+        let signal = &self.network.signals[signal_id.index()];
+        match self.scenario.forced_mode(self.scheduled_mode_at(signal, time_s)) {
+            SignalMode::FixedCycle => NodeControl::Fixed,
+            SignalMode::FlashingAmber | SignalMode::Off => NodeControl::Priority,
+        }
     }
 
     fn release(&mut self, t1: f64) {
@@ -448,7 +848,17 @@ impl Simulation {
             let id = self.vehicles.len() as u64;
             let inertia = trip.inertia.unwrap_or(self.scenario.route_inertia);
             let routed = shortest_path(&self.network, &self.free_flow, trip.origin, trip.destination);
-            let (path, habitual) = routed.unwrap_or((Vec::new(), f64::INFINITY));
+            self.route_searches += 1;
+            let Some((path, habitual)) = routed else {
+                self.rejected_trips += 1;
+                if self.rejected_trips <= 12 || self.rejected_trips % 1000 == 0 {
+                    eprintln!(
+                        "rejected unroutable departure {:.0}s {} -> {} ({} so far)",
+                        trip.depart_s, trip.origin.0, trip.destination.0, self.rejected_trips
+                    );
+                }
+                continue;
+            };
             self.vehicles.push(Vehicle {
                 id,
                 origin: trip.origin,
@@ -462,39 +872,47 @@ impl Simulation {
                 habitual_s: habitual,
                 baseline_s: habitual,
                 inertia,
+                route_checked_s: f64::NEG_INFINITY,
             });
             self.spawned += 1;
             if trip.origin == trip.destination {
                 self.vehicles[id as usize].arrive_s = Some(trip.depart_s);
                 self.completed += 1;
             } else {
-                self.waiting[trip.origin.index()].push(id);
+                self.push_waiting(trip.origin.index(), id);
             }
         }
     }
 
-    fn propose(&self, node_index: usize, dt: f64, t1: f64, experienced: &[f64], rooms: &[u32]) -> NodeProposal {
+    fn propose(&self, node_index: usize, dt: f64, t1: f64) -> NodeProposal {
         let node = NodeId(node_index as u32);
         let mut proposal = NodeProposal {
             departures: Vec::new(),
             entries: Vec::new(),
             credits: Vec::new(),
             demand: Vec::new(),
+            route_checks: Vec::new(),
+            kept_paths: Vec::new(),
+            route_ns: 0,
+            signal_ns: 0,
+            searches: 0,
+            reroutes: 0,
         };
         let major_conflict = self.priority_conflict(node, t1);
         let mut incoming: Vec<EdgeId> = self.network.adjacency.incoming(node).to_vec();
         incoming.sort_by_key(|edge| edge.0);
-        let busy = !self.waiting[node.index()].is_empty()
-            || incoming.iter().any(|edge| !self.queues.queues[edge.index()].is_empty());
-        let mut room = if busy { rooms.to_vec() } else { Vec::new() };
+        let mut room = LocalRoom::from_outgoing(self, node);
         for edge in incoming {
+            let clock = Instant::now();
             let open = self.approach_open(edge, major_conflict);
             let capacity = scaled_capacity(self.network.edges[edge.index()].capacity_veh_per_s, edge, &self.scenario);
-            let (slots, credit) = discharge_slots(open, capacity, self.discharge_credit[edge.index()], dt);
+            let settled = self.credit_settled(edge.index(), self.time_s);
+            let (slots, credit) = discharge_slots(open, capacity, settled, dt);
+            proposal.signal_ns += clock.elapsed().as_nanos();
             proposal.credits.push((edge.index(), credit));
-            self.drain_edge(node, edge, slots, t1, experienced, &mut room, &mut proposal);
+            self.drain_edge(node, edge, slots, t1, &mut room, &mut proposal);
         }
-        self.drain_origin(node, t1, experienced, &mut room, &mut proposal);
+        self.drain_origin(node, t1, &mut room, &mut proposal);
         proposal
     }
 
@@ -504,8 +922,7 @@ impl Simulation {
         edge: EdgeId,
         mut slots: u32,
         t1: f64,
-        experienced: &[f64],
-        room: &mut [u32],
+        room: &mut LocalRoom,
         proposal: &mut NodeProposal,
     ) {
         for (position, vehicle_id) in self.queues.queues[edge.index()].iter().enumerate() {
@@ -527,12 +944,18 @@ impl Simulation {
                 slots -= 1;
                 continue;
             }
-            let decision = self.decide_next(vehicle, node, experienced);
+            let decision = self.decide_next(vehicle, node);
+            proposal.route_ns += decision.route_ns;
+            proposal.searches += decision.searches;
+            proposal.reroutes += decision.reroutes;
+            if decision.searched {
+                proposal.route_checks.push(vehicle.id);
+            }
             let Some(next) = decision.next else {
                 break;
             };
-            if !self.turn_ok(node, edge, next) || room[next.index()] == 0 {
-                if room[next.index()] == 0 {
+            if !self.turn_ok(node, edge, next) || room.left(next) == 0 {
+                if room.left(next) == 0 {
                     let held = self.queues.queues[edge.index()]
                         .iter()
                         .skip(position)
@@ -542,7 +965,7 @@ impl Simulation {
                 }
                 break;
             }
-            room[next.index()] -= 1;
+            room.take(next);
             proposal.departures.push(MoveOut {
                 vehicle: vehicle.id,
                 edge,
@@ -558,14 +981,7 @@ impl Simulation {
         }
     }
 
-    fn drain_origin(
-        &self,
-        node: NodeId,
-        t1: f64,
-        experienced: &[f64],
-        room: &mut [u32],
-        proposal: &mut NodeProposal,
-    ) {
+    fn drain_origin(&self, node: NodeId, t1: f64, room: &mut LocalRoom, proposal: &mut NodeProposal) {
         let waiting = &self.waiting[node.index()];
         if waiting.is_empty() {
             return;
@@ -577,12 +993,22 @@ impl Simulation {
                 plans.push(None);
                 continue;
             }
-            plans.push(Some(self.decide_entry(vehicle, node, experienced)));
+            let plan = self.decide_entry(vehicle, node);
+            proposal.route_ns += plan.route_ns;
+            proposal.searches += plan.searches;
+            proposal.reroutes += plan.reroutes;
+            if plan.searched {
+                proposal.route_checks.push(vehicle.id);
+            }
+            if !plan.path.is_empty() && (vehicle.path.is_empty() || self.network.edges[vehicle.path[0].index()].from != node) {
+                proposal.kept_paths.push((vehicle.id, plan.path.clone(), plan.baseline_s, plan.habitual_s));
+            }
+            plans.push(Some(plan));
         }
         let mut entered = vec![false; waiting.len()];
         let outgoing = self.network.adjacency.outgoing(node);
         for edge in outgoing {
-            let mut left = room[edge.index()];
+            let mut left = room.left(*edge);
             if left == 0 {
                 continue;
             }
@@ -606,16 +1032,29 @@ impl Simulation {
                     habitual_s: plan.habitual_s,
                 });
             }
-            room[edge.index()] = left;
+            room.set(*edge, left);
         }
     }
 
-    fn decide_entry(&self, vehicle: &Vehicle, node: NodeId, experienced: &[f64]) -> EntryPlan {
+    fn decide_entry(&self, vehicle: &Vehicle, node: NodeId) -> EntryPlan {
         let mut path = vehicle.path.clone();
         let mut baseline = vehicle.baseline_s;
         let mut habitual = vehicle.habitual_s;
-        if path.is_empty() || self.network.edges[path[0].index()].from != node {
-            if let Some((replacement, cost)) = shortest_path(&self.network, &self.free_flow, node, vehicle.destination) {
+        let mut searched = false;
+        let mut searches = 0u32;
+        let mut reroutes = 0u32;
+        let mut route_ns = 0u128;
+        // An empty path means the free-flow search at release already failed. Repeating
+        // it while the vehicle waits does not create a route. A misaligned path is a
+        // different node and may be repaired, at most once per cooldown.
+        let misaligned = !path.is_empty() && self.network.edges[path[0].index()].from != node;
+        if misaligned && self.route_due(vehicle) {
+            searched = true;
+            searches += 1;
+            let clock = Instant::now();
+            let found = shortest_path(&self.network, &self.free_flow, node, vehicle.destination);
+            route_ns += clock.elapsed().as_nanos();
+            if let Some((replacement, cost)) = found {
                 path = replacement;
                 baseline = cost;
                 if !habitual.is_finite() {
@@ -623,10 +1062,17 @@ impl Simulation {
                 }
             }
         }
-        let experienced_cost = path_cost(&path, experienced);
-        let free_cost = path_cost(&path, &self.free_flow);
-        if should_reroute(experienced_cost, free_cost, vehicle.inertia) {
-            if let Some((replacement, _)) = shortest_path(&self.network, experienced, node, vehicle.destination) {
+        if self.route_due(vehicle)
+            && self.may_reroute(node, &path, 0)
+            && should_reroute(path_cost(&path, &self.experienced), path_cost(&path, &self.free_flow), vehicle.inertia)
+        {
+            searched = true;
+            searches += 1;
+            reroutes += 1;
+            let clock = Instant::now();
+            let found = shortest_path(&self.network, &self.experienced, node, vehicle.destination);
+            route_ns += clock.elapsed().as_nanos();
+            if let Some((replacement, _)) = found {
                 if replacement.first() != path.first() {
                     baseline = path_cost(&replacement, &self.free_flow);
                     path = replacement;
@@ -639,62 +1085,120 @@ impl Simulation {
             path,
             baseline_s: baseline,
             habitual_s: habitual,
+            searched,
+            route_ns,
+            searches,
+            reroutes,
         }
     }
 
-    fn decide_next(&self, vehicle: &Vehicle, node: NodeId, experienced: &[f64]) -> NextPlan {
-        let suffix = if vehicle.cursor + 1 <= vehicle.path.len() {
-            vehicle.path[vehicle.cursor + 1..].to_vec()
-        } else {
-            Vec::new()
-        };
+    fn route_due(&self, vehicle: &Vehicle) -> bool {
+        self.time_s >= vehicle.route_checked_s + REROUTE_COOLDOWN_S
+    }
+
+    /// A queued vehicle cannot leave the link it is already on. A new path is considered
+    /// only at a junction with two or more exits, and only when more than 300 m remain.
+    fn may_reroute(&self, node: NodeId, path: &[EdgeId], from_cursor: usize) -> bool {
+        if self.network.adjacency.outgoing(node).len() < 2 {
+            return false;
+        }
+        let mut metres = 0.0;
+        for edge in path.iter().skip(from_cursor) {
+            metres += self.network.edges[edge.index()].length_m;
+            if metres >= REROUTE_MIN_REMAINING_M {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn decide_next(&self, vehicle: &Vehicle, node: NodeId) -> NextPlan {
+        let suffix_start = vehicle.cursor + 1;
         let mut path = vehicle.path.clone();
-        let mut baseline = path_cost(&suffix, &self.free_flow);
-        let experienced_cost = path_cost(&suffix, experienced);
-        if should_reroute(experienced_cost, baseline, vehicle.inertia) {
-            if let Some((replacement, _)) = shortest_path(&self.network, experienced, node, vehicle.destination) {
-                let old_next = suffix.first().copied();
-                if replacement.first().copied() != old_next {
-                    path.truncate(vehicle.cursor + 1);
-                    path.extend(replacement.iter().copied());
-                    baseline = path_cost(&replacement, &self.free_flow);
+        let mut baseline = path_cost(&path[suffix_start.min(path.len())..], &self.free_flow);
+        let mut searched = false;
+        let mut searches = 0u32;
+        let mut reroutes = 0u32;
+        let mut route_ns = 0u128;
+        if self.route_due(vehicle) && self.may_reroute(node, &path, suffix_start) {
+            let experienced_cost = path_cost(&path[suffix_start.min(path.len())..], &self.experienced);
+            if should_reroute(experienced_cost, baseline, vehicle.inertia) {
+                searched = true;
+                searches += 1;
+                reroutes += 1;
+                let clock = Instant::now();
+                let found = shortest_path(&self.network, &self.experienced, node, vehicle.destination);
+                route_ns += clock.elapsed().as_nanos();
+                if let Some((replacement, _)) = found {
+                    let old_next = path.get(suffix_start).copied();
+                    if replacement.first().copied() != old_next {
+                        path.truncate(suffix_start);
+                        path.extend(replacement.iter().copied());
+                        baseline = path_cost(&replacement, &self.free_flow);
+                    }
                 }
             }
         }
-        let next = path.get(vehicle.cursor + 1).copied();
-        let cursor = vehicle.cursor + 1;
+        let next = path.get(suffix_start).copied();
+        let cursor = suffix_start;
         NextPlan {
             next,
             path,
             cursor,
             baseline_s: baseline,
+            searched,
+            route_ns,
+            searches,
+            reroutes,
         }
     }
 
     fn apply(&mut self, proposals: &[NodeProposal], t1: f64) {
-        let _ = t1;
-        let mut demand = vec![0u32; self.network.edges.len()];
+        for edge in &self.demand_touched {
+            let index = *edge as usize;
+            self.demand[index] = 0;
+            self.links.cumulative_demand[index] = 0.0;
+        }
+        self.demand_touched.clear();
         for proposal in proposals {
             for (edge, credit) in &proposal.credits {
                 self.discharge_credit[*edge] = *credit;
+                self.credit_at[*edge] = t1;
             }
             for (edge, count) in &proposal.demand {
-                demand[*edge] = demand[*edge].saturating_add(*count);
+                if self.demand[*edge] == 0 {
+                    self.demand_touched.push(*edge as u32);
+                }
+                self.demand[*edge] = self.demand[*edge].saturating_add(*count);
             }
+        }
+        for edge in &self.demand_touched {
+            self.links.cumulative_demand[*edge as usize] = f64::from(self.demand[*edge as usize]);
         }
         for proposal in proposals {
             for departure in &proposal.departures {
-                let queue = &mut self.queues.queues[departure.edge.index()];
-                let front = queue.pop_front().expect("departure matches the FIFO prefix");
-                assert_eq!(front, departure.vehicle);
-                self.links.cumulative_out[departure.edge.index()] += 1.0;
                 let edge_index = departure.edge.index();
+                let front = self.queues.queues[edge_index]
+                    .pop_front()
+                    .expect("departure matches the FIFO prefix");
+                assert_eq!(front, departure.vehicle);
+                if self.queues.queues[edge_index].is_empty() {
+                    self.vacate(edge_index);
+                    self.just_emptied.push(edge_index as u32);
+                }
+                self.refresh_weight(edge_index);
+                self.links.cumulative_out[edge_index] += 1.0;
                 let spent = (departure.at - self.vehicles[departure.vehicle as usize].enter_s).max(0.0);
                 let travel = self.free_flow[edge_index];
+                let length = self.network.edges[edge_index].length_m;
                 if travel.is_finite() {
-                    self.delay_s += (spent - travel).max(0.0);
+                    let delay = (spent - travel).max(0.0);
+                    self.delay_s += delay;
+                    self.edge_delay_s[edge_index] += delay;
                 }
-                self.vkt_m += self.network.edges[edge_index].length_m;
+                self.edge_travel_s[edge_index] += spent;
+                self.edge_distance_m[edge_index] += length;
+                self.vkt_m += length;
                 let vehicle = &mut self.vehicles[departure.vehicle as usize];
                 match &departure.kind {
                     MoveKind::Complete => {
@@ -713,8 +1217,11 @@ impl Simulation {
         }
         for proposal in proposals {
             for entry in &proposal.entries {
-                self.waiting[self.network.edges[entry.edge.index()].from.index()]
-                    .retain(|id| *id != entry.vehicle);
+                let from = self.network.edges[entry.edge.index()].from.index();
+                self.waiting[from].retain(|id| *id != entry.vehicle);
+                if self.waiting[from].is_empty() {
+                    self.unmark_waiting(from);
+                }
                 let vehicle = &mut self.vehicles[entry.vehicle as usize];
                 vehicle.path.clone_from(&entry.path);
                 vehicle.cursor = 0;
@@ -724,37 +1231,41 @@ impl Simulation {
                 if entry.habitual_s.is_finite() {
                     vehicle.habitual_s = entry.habitual_s;
                 }
-                self.queues.queues[entry.edge.index()].push_back(entry.vehicle);
+                self.enqueue(entry.edge.index(), entry.vehicle);
                 self.links.cumulative_in[entry.edge.index()] += 1.0;
             }
         }
         for proposal in proposals {
             for departure in &proposal.departures {
-                let MoveKind::Transfer {
-                    to,
-                    path: _,
-                    cursor: _,
-                    baseline_s: _,
-                } = &departure.kind
-                else {
+                let MoveKind::Transfer { to, .. } = &departure.kind else {
                     continue;
                 };
                 let vehicle = &mut self.vehicles[departure.vehicle as usize];
                 vehicle.on_link = true;
                 vehicle.enter_s = departure.at;
-                self.queues.queues[to.index()].push_back(departure.vehicle);
+                self.enqueue(to.index(), departure.vehicle);
                 self.links.cumulative_in[to.index()] += 1.0;
             }
         }
-        for (edge, count) in demand.iter().enumerate() {
-            self.links.cumulative_demand[edge] = f64::from(*count);
+        for proposal in proposals {
+            for id in &proposal.route_checks {
+                self.vehicles[*id as usize].route_checked_s = t1;
+            }
+            for (id, path, baseline, habitual) in &proposal.kept_paths {
+                let vehicle = &mut self.vehicles[*id as usize];
+                vehicle.path.clone_from(path);
+                vehicle.baseline_s = *baseline;
+                if habitual.is_finite() {
+                    vehicle.habitual_s = *habitual;
+                }
+            }
         }
         if proposals.iter().any(|proposal| !proposal.departures.is_empty() || !proposal.entries.is_empty()) {
             self.appearance = self.appearance.wrapping_add(1);
         }
     }
 
-    fn audit(&self) -> Result<(), EngineError> {
+    fn audit(&mut self) -> Result<(), EngineError> {
         let census = self.census();
         if census.spawned != census.active + census.completed {
             return Err(EngineError::Conservation {
@@ -763,23 +1274,37 @@ impl Simulation {
                 completed: census.completed,
             });
         }
-        for (index, queue) in self.queues.queues.iter().enumerate() {
-            let counted = self.links.vehicles(EdgeId(index as u32));
-            if (counted - queue.len() as f64).abs() > 1e-6 {
-                return Err(EngineError::LinkMismatch {
-                    edge: index as u32,
-                    queued: queue.len(),
-                    counted,
-                });
+        for edge in &self.occupied {
+            self.check_edge(*edge)?;
+        }
+        let emptied = std::mem::take(&mut self.just_emptied);
+        for edge in emptied {
+            if self.occupied_pos[edge as usize] != u32::MAX {
+                continue;
             }
-            let storage = self.network.edges[index].storage_max_veh;
-            if queue.len() as f64 > storage + 1e-6 {
-                return Err(EngineError::Storage {
-                    edge: index as u32,
-                    queued: queue.len(),
-                    storage,
-                });
-            }
+            self.check_edge(edge)?;
+        }
+        Ok(())
+    }
+
+    fn check_edge(&self, edge: u32) -> Result<(), EngineError> {
+        let index = edge as usize;
+        let queued = self.queues.queues[index].len();
+        let counted = self.links.vehicles(EdgeId(edge));
+        if (counted - queued as f64).abs() > 1e-6 {
+            return Err(EngineError::LinkMismatch {
+                edge,
+                queued,
+                counted,
+            });
+        }
+        let storage = self.network.edges[index].storage_max_veh;
+        if queued as f64 > storage + 1e-6 {
+            return Err(EngineError::Storage {
+                edge,
+                queued,
+                storage,
+            });
         }
         Ok(())
     }
@@ -794,137 +1319,53 @@ impl Simulation {
         if self.pending.first().is_some_and(|trip| trip.depart_s <= horizon + 1e-9) {
             return 0;
         }
-        let mut left = seconds;
-        while left > 0 {
-            let chunk = self.stable_idle_seconds(left);
-            self.accrue_idle_seconds(chunk);
-            self.time_s += f64::from(chunk);
-            left -= chunk;
-        }
+        self.time_s = horizon;
         seconds
     }
 
-    /// Same discharge remainder an empty network would store, without proposing moves.
-    fn tick_idle_credits(&mut self, dt: f64) {
-        for index in 0..self.network.edges.len() {
-            let edge = EdgeId(index as u32);
-            let capacity = scaled_capacity(self.network.edges[index].capacity_veh_per_s, edge, &self.scenario);
-            let open = self.approach_open(edge, false);
-            let (_, credit) = discharge_slots(open, capacity, self.discharge_credit[index], dt);
-            self.discharge_credit[index] = credit;
-        }
-    }
-
-    fn stable_idle_seconds(&self, max_seconds: u32) -> u32 {
+    /// Move the clock forward while every vehicle is still traveling and no trip is due.
+    /// The second a vehicle becomes ready, or a trip departs, stays with [`Simulation::step`].
+    /// Discharge remainders stay where they are and catch up on the next leave.
+    pub fn coast(&mut self, max_seconds: u32) -> u32 {
         if max_seconds == 0 {
             return 0;
         }
-        if !matches!(self.scenario.signal_schedule, SignalSchedule::Unchanged) {
-            return max_seconds;
-        }
-        let tod = self.time_of_day();
-        let mut limit = max_seconds;
-        for signal in &self.network.signals {
-            limit = limit.min(seconds_until_window_boundary(tod, signal.night_window));
-        }
-        limit.max(1)
-    }
-
-    fn accrue_idle_seconds(&mut self, steps: u32) {
-        if steps == 0 {
-            return;
-        }
-        let priority = self.priority_nodes();
-        let bare = self.scenario.edge_capacity_scale.is_empty();
-        let mut by_signal: Vec<Vec<usize>> = vec![Vec::new(); self.network.signals.len()];
-        for index in 0..self.network.edges.len() {
-            let head = self.network.edges[index].to.index();
-            if priority[head] {
-                self.add_open_credit(index, steps, bare);
-            } else if let Some(signal) = self.network.nodes[head].signal {
-                by_signal[signal.index()].push(index);
+        let next_trip = self.pending.first().map(|trip| trip.depart_s).unwrap_or(f64::INFINITY);
+        let next_ready = self.next_ready_s();
+        let horizon = self.time_s + f64::from(max_seconds);
+        let stop = next_trip.min(next_ready).min(horizon);
+        let mut seconds = (stop - self.time_s).floor().max(0.0) as u32;
+        seconds = seconds.min(max_seconds);
+        if seconds > 0 {
+            let landed = self.time_s + f64::from(seconds);
+            if (landed - next_trip).abs() <= 1e-6 || (landed - next_ready).abs() <= 1e-6 {
+                seconds -= 1;
             }
         }
-        for (signal_index, edges) in by_signal.into_iter().enumerate() {
-            if !edges.is_empty() {
-                self.accrue_fixed_signal(signal_index, &edges, steps, bare);
-            }
+        if seconds == 0 {
+            return 0;
         }
+        let active = self.spawned.saturating_sub(self.completed) as f64;
+        self.time_s += f64::from(seconds);
+        self.vht_s += active * f64::from(seconds);
+        seconds
     }
 
-    fn accrue_fixed_signal(&mut self, signal_index: usize, edges: &[usize], steps: u32, bare: bool) {
-        let signal = &self.network.signals[signal_index];
-        let cycle = signal.cycle_length_s;
-        if cycle <= 0.0 || signal.phases.is_empty() {
-            return;
-        }
-        let base = (self.time_s + self.clock_origin_s + signal.offset_s).rem_euclid(cycle);
-        let intervals: Vec<(usize, Vec<(f64, f64)>)> = edges
-            .iter()
-            .copied()
-            .map(|index| (index, open_intervals(signal, EdgeId(index as u32))))
-            .collect();
-        let mut period = 0u32;
-        let search = steps.min(16_384);
-        for candidate in 1..=search {
-            let turns = f64::from(candidate) / cycle;
-            if (turns - turns.round()).abs() > 1e-8 {
+    fn next_ready_s(&self) -> f64 {
+        let mut next = f64::INFINITY;
+        for edge in &self.occupied {
+            let Some(id) = self.queues.queues[*edge as usize].front() else {
                 continue;
+            };
+            let head = self.network.edges[*edge as usize].to;
+            next = next.min(self.ready_time(&self.vehicles[*id as usize], EdgeId(*edge), head));
+        }
+        for node in &self.active_waiting {
+            for id in &self.waiting[*node as usize] {
+                next = next.min(self.vehicles[*id as usize].depart_s);
             }
-            let local = (base + f64::from(candidate)).rem_euclid(cycle);
-            if (local - base).abs() < 1e-5 {
-                period = candidate;
-                break;
-            }
         }
-        if period > 0 {
-            for (index, intervals) in &intervals {
-                let mut pattern = 0u32;
-                for step in 0..period {
-                    let local = (base + f64::from(step)).rem_euclid(cycle);
-                    if local_is_open(local, intervals) {
-                        pattern += 1;
-                    }
-                }
-                let full = steps / period;
-                let remainder = steps % period;
-                let mut open = full.saturating_mul(pattern);
-                let skip = full * period;
-                for step in 0..remainder {
-                    let local = (base + f64::from(skip + step)).rem_euclid(cycle);
-                    if local_is_open(local, intervals) {
-                        open += 1;
-                    }
-                }
-                self.add_open_credit(*index, open, bare);
-            }
-            return;
-        }
-        let mut local = base;
-        let mut opens = vec![0u32; intervals.len()];
-        for _ in 0..steps {
-            for (slot, (_, edge_intervals)) in intervals.iter().enumerate() {
-                if local_is_open(local, edge_intervals) {
-                    opens[slot] += 1;
-                }
-            }
-            local = (local + 1.0).rem_euclid(cycle);
-        }
-        for (slot, (index, _)) in intervals.iter().enumerate() {
-            self.add_open_credit(*index, opens[slot], bare);
-        }
-    }
-
-    fn add_open_credit(&mut self, index: usize, open_steps: u32, bare: bool) {
-        if open_steps == 0 {
-            return;
-        }
-        let capacity = self.edge_capacity(index, bare);
-        if capacity <= 1e-12 {
-            return;
-        }
-        let offered = self.discharge_credit[index] + capacity * f64::from(open_steps);
-        self.discharge_credit[index] = offered - offered.floor();
+        next
     }
 
     fn edge_capacity(&self, index: usize, bare: bool) -> f64 {
@@ -934,34 +1375,6 @@ impl Simulation {
         } else {
             scaled_capacity(base, EdgeId(index as u32), &self.scenario)
         }
-    }
-
-    fn priority_nodes(&self) -> Vec<bool> {
-        self.network
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| {
-                node.signal.is_none() || matches!(self.node_mode(NodeId(index as u32)), NodeControl::Priority)
-            })
-            .collect()
-    }
-
-    fn receiving_rooms(&self) -> Vec<u32> {
-        self.network
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(index, edge)| {
-                let id = EdgeId(index as u32);
-                let capacity = scaled_capacity(edge.capacity_veh_per_s, id, &self.scenario);
-                if capacity <= 1e-12 {
-                    return 0;
-                }
-                let occupied = self.queues.vehicles(id) as f64;
-                storage_inflow_ceiling(edge.storage_max_veh, occupied).floor() as u32
-            })
-            .collect()
     }
 
     fn approach_open(&self, edge: EdgeId, major_conflict: bool) -> bool {
@@ -981,26 +1394,36 @@ impl Simulation {
     }
 
     fn node_mode(&self, node: NodeId) -> NodeControl {
-        let Some(signal_id) = self.network.nodes[node.index()].signal else {
-            return NodeControl::Priority;
-        };
-        let signal = &self.network.signals[signal_id.index()];
-        let scheduled = signal.mode_at(self.time_of_day());
-        match self.scenario.forced_mode(scheduled) {
-            SignalMode::FixedCycle => NodeControl::Fixed,
-            SignalMode::FlashingAmber | SignalMode::Off => NodeControl::Priority,
+        self.control_at(node, self.time_s)
+    }
+
+    fn scheduled_mode_at(&self, signal: &SignalController, time_s: f64) -> SignalMode {
+        let tod = (self.clock_origin_s + time_s).rem_euclid(86_400.0) as u32;
+        if let Some(window) = self.scenario.night_flashing {
+            if window.contains(tod) {
+                signal.night_mode
+            } else {
+                signal.mode_outside_night
+            }
+        } else {
+            signal.mode_at(tod)
         }
     }
 
     fn phase_open(&self, node: NodeId, edge: EdgeId) -> bool {
+        self.phase_open_at(node, edge, self.time_s)
+    }
+
+    fn phase_open_at(&self, node: NodeId, edge: EdgeId, time_s: f64) -> bool {
         let Some(signal_id) = self.network.nodes[node.index()].signal else {
             return true;
         };
         let signal = &self.network.signals[signal_id.index()];
-        if signal.cycle_length_s <= 0.0 || signal.phases.is_empty() {
-            return false;
+        let listed = signal.phases.iter().any(|phase| phase.incoming.contains(&edge));
+        if !listed || signal.cycle_length_s <= 0.0 || signal.phases.is_empty() {
+            return true;
         }
-        let time = self.time_s + self.clock_origin_s;
+        let time = time_s + self.clock_origin_s;
         let mut local = (time + signal.offset_s).rem_euclid(signal.cycle_length_s);
         for phase in &signal.phases {
             let moving = phase.green_s + phase.yellow_s;
@@ -1071,9 +1494,43 @@ impl Simulation {
             .iter()
             .any(|turn| turn.from_edge == from && turn.to_edge == to && turn.allowed)
     }
+}
 
-    fn time_of_day(&self) -> u32 {
-        (self.clock_origin_s + self.time_s).rem_euclid(86_400.0) as u32
+struct LocalRoom {
+    ids: Vec<u32>,
+    left: Vec<u32>,
+}
+
+impl LocalRoom {
+    fn from_outgoing(sim: &Simulation, node: NodeId) -> Self {
+        let outgoing = sim.network.adjacency.outgoing(node);
+        let mut ids = Vec::with_capacity(outgoing.len());
+        let mut left = Vec::with_capacity(outgoing.len());
+        for edge in outgoing {
+            ids.push(edge.0);
+            left.push(sim.edge_room(edge.index()));
+        }
+        Self { ids, left }
+    }
+
+    fn slot(&self, edge: EdgeId) -> Option<usize> {
+        self.ids.iter().position(|id| *id == edge.0)
+    }
+
+    fn left(&self, edge: EdgeId) -> u32 {
+        self.slot(edge).map(|slot| self.left[slot]).unwrap_or(0)
+    }
+
+    fn take(&mut self, edge: EdgeId) {
+        if let Some(slot) = self.slot(edge) {
+            self.left[slot] = self.left[slot].saturating_sub(1);
+        }
+    }
+
+    fn set(&mut self, edge: EdgeId, value: u32) {
+        if let Some(slot) = self.slot(edge) {
+            self.left[slot] = value;
+        }
     }
 }
 
@@ -1082,6 +1539,10 @@ struct EntryPlan {
     path: Vec<EdgeId>,
     baseline_s: f64,
     habitual_s: f64,
+    searched: bool,
+    route_ns: u128,
+    searches: u32,
+    reroutes: u32,
 }
 
 struct NextPlan {
@@ -1089,43 +1550,15 @@ struct NextPlan {
     path: Vec<EdgeId>,
     cursor: usize,
     baseline_s: f64,
+    searched: bool,
+    route_ns: u128,
+    searches: u32,
+    reroutes: u32,
 }
 
 enum NodeControl {
     Fixed,
     Priority,
-}
-
-fn seconds_until_window_boundary(tod: u32, window: TimeWindow) -> u32 {
-    let day = 86_400u32;
-    let now = tod % day;
-    let ahead = |boundary: u32| -> u32 {
-        let boundary = boundary % day;
-        if boundary > now {
-            boundary - now
-        } else {
-            day - now + boundary
-        }
-    };
-    ahead(window.start_s).min(ahead(window.end_s)).max(1)
-}
-
-fn open_intervals(signal: &SignalController, edge: EdgeId) -> Vec<(f64, f64)> {
-    let mut cursor = 0.0;
-    let mut intervals = Vec::new();
-    for phase in &signal.phases {
-        let moving = phase.green_s + phase.yellow_s;
-        let span = moving + phase.all_red_s;
-        if moving > 0.0 && phase.incoming.contains(&edge) {
-            intervals.push((cursor, cursor + moving));
-        }
-        cursor += span;
-    }
-    intervals
-}
-
-fn local_is_open(local: f64, intervals: &[(f64, f64)]) -> bool {
-    intervals.iter().any(|(start, end)| local >= *start && local < *end)
 }
 
 fn discharge_slots(open: bool, capacity: f64, credit: f64, dt: f64) -> (u32, f64) {

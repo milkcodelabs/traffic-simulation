@@ -19,6 +19,34 @@ export async function loadGeometry(cachePath: string): Promise<ArrayBuffer> {
   return bytes;
 }
 
+export async function compiledCache(): Promise<string | null> {
+  return invoke<string | null>("compiled_cache");
+}
+
+export async function openSimulation(cachePath: string): Promise<void> {
+  return invoke("open_simulation", { cachePath });
+}
+
+export type SimulationControl = {
+  paused?: boolean;
+  speed?: number;
+  demandPerHour?: number;
+  signal?: "clock" | "fixed" | "flashing";
+  seekS?: number;
+};
+
+export async function controlSimulation(control: SimulationControl): Promise<void> {
+  return invoke("simulation_control", { control });
+}
+
+export async function readFrame(since: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("simulation_frame", { since });
+}
+
+export async function simulationStatus(): Promise<{ running: boolean; error: string | null }> {
+  return invoke("simulation_status");
+}
+
 export async function chooseOsmFile(): Promise<string | null> {
   const selected = await open({
     multiple: false,

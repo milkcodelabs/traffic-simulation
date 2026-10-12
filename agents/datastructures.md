@@ -10,7 +10,7 @@ The compiled network is a static, city-agnostic road graph. Simulation time, sig
 crates/sim-core     graph, fundamental diagram, grades, turns, signals, demand profile, link state, cache
 crates/sim-engine   discrete link-transmission step, spatial queues, signals, bounded-rationality routes
 crates/sim-ingest   OSM XML/PBF, presets, clip, contraction, compilation into sim-core::Network
-crates/sim-ipc      command DTOs and the compact viewport blob
+crates/sim-ipc      command DTOs, the viewport blob, and the per-frame link-state blob
 crates/sim-cli      headless ingestion (the batch runner arrives with the scenario engine)
 src-tauri           Tauri v2 shell
 ui                  React / TypeScript / Tailwind research console
@@ -297,7 +297,9 @@ One step of length `Δt` is simultaneous, using the vehicle counts at the start 
 - Inflow into `e` cannot exceed `max(0, S_max,e − N_e)`. A full link accepts nothing even if it also discharges in the same step, which is the project spillback bound. The rejected vehicle remains on the upstream link and occupies its storage, so the queue moves backward when that link fills.
 - A vehicle moves at most onto the next link of its path. It does not skip a link.
 
-Fixed-cycle discharge is green and yellow for the approaches named on the active phase. Flashing amber and unsignalised nodes use class rank: approaches that share the highest incoming rank keep priority; every lower rank waits `tau_yield_s` and yields the step when a priority vehicle is already at the stop line. `Scenario::forced_mode` overrides the clock. The clock origin defaults to 12:00, so an unchanged controller is on its fixed cycle; the night window still selects flashing amber.
+Fixed-cycle discharge is green and yellow for the approaches named on the active phase. Flashing amber and unsignalised nodes use class rank: approaches that share the highest incoming rank keep priority; every lower rank waits `tau_yield_s` and yields the step when a priority vehicle is already at the stop line. `Scenario::forced_mode` overrides the clock. The clock origin defaults to 12:00, so an unchanged controller is on its fixed cycle; the night window still selects flashing amber. The desktop session sets the origin to midnight so the scrubber and the signal clock are the same day.
+
+Each step adds `active × Δt` to vehicle-hours (VHT). A vehicle that leaves a link adds that link’s length to vehicle-kilometres (VKT) and `max(0, time_on_link − length / v)` to cumulative delay. The drawing sample for an edge is `v / v_free`: 1 when the edge is empty, otherwise free-flow time divided by `max(length / v, N / q)`, clamped to `[0, 1]`. Density is `N / S_max`. The queue count is the number of vehicles that have already spent their free-flow time and are still waiting to discharge. `Simulation::snapshot` copies that mutable state so the desktop thread can rewind without cloning the graph. A step with no due trip and no vehicle still in the network only advances the clock and the per-edge discharge remainder. Several such seconds collapse into one remainder update: an open approach adds `capacity × open seconds` and keeps the fractional part, and a seek splits that update where the night window changes the signal mode. The move, routing, and audit passes run once a trip is due.
 
 Habitual routes are Dijkstra on free-flow time `length / v`, expanding only turns with `Turn.allowed`. At a decision (origin entry, or the downstream node of a departure) the driver compares the experienced cost of the remaining habitual path with `inertia *` its free-flow cost. Experienced cost of a link is `max(length / v, N / q)`, or infinity when `q = 0`. The default inertia is 1.4. A path is replaced only when that ratio is exceeded, and only by another finite path. Distinct shortest-path queries in a step run on a Rayon pool. Proposals for every node are also computed on that pool from the shared start-of-step snapshot; the merge applies every departure before every entry so a vehicle that just entered cannot be popped as if it had already queued.
 
@@ -338,8 +340,13 @@ JSON commands, camelCase fields:
 | `ingest_network` | cache path, raw path, `NetworkStats`, warning strings |
 | `network_summary` | same report read back from a cache |
 | `network_geometry` | binary viewport blob as an array buffer |
+| `compiled_cache` | path of `data/cache/thessaloniki.simnet` when that file exists |
+| `open_simulation` | loads a cache onto the background simulation thread |
+| `simulation_control` | pause, speed multiplier, boundary veh/h, signal schedule, seek second |
+| `simulation_frame` | the latest frame blob, or empty when `since` is already current |
+| `simulation_status` | whether a session is publishing, and the last step error |
 
-`NetworkStats` carries node, edge, turn, banned-turn, signal, gateway, and zone counts, total length and lane-kilometres, mean edge length, contraction count, bbox, and diagram name.
+`NetworkStats` carries node, edge, turn, banned-turn, signal, gateway, and zone counts, total length and lane-kilometres, mean edge length, contraction count, bbox, and diagram name. The simulation thread is the only caller of `Simulation::step`. The webview polls `simulation_frame` from a timer and paints the previous buffer if no new one has arrived.
 
 Viewport blob, little-endian:
 
@@ -355,7 +362,33 @@ repeated edge_count times:
   point_count × (lon f32, lat f32)
 ```
 
-`f32` degrees are for drawing. Simulation state never travels in this blob. Frame streaming for the link-transmission step will be a second blob, defined when that step exists.
+`f32` degrees are for drawing. Simulation state never travels in this blob.
+
+Frame blob, little-endian, magic `TSF1`:
+
+```
+magic u32 = 0x54534631
+version u32 = 1
+sequence u64
+time_s f64
+speed f32
+flags u32          bit 0 paused, bit 1 seeking, bit 2 unchanged
+mean_speed_mps f32
+vht_s f64
+vkt_m f64
+delay_s f64
+spawned u32
+active u32
+completed u32
+edge_count u32
+bottleneck_count u32
+bottleneck_count × (edge u32, speed_ratio f32, queue_veh f32)
+edge_count × speed_ratio f32
+edge_count × density_ratio f32
+edge_count × queue_veh f32
+```
+
+The header is 80 bytes. Edge order is the dense edge index, the same order as the viewport blob. A bottleneck row is present only when `queue_veh > 0`, at most eight, highest queue first. When link contents are unchanged, the publisher sets bit 2 and writes `edge_count = 0` with no columns. The webview keeps the previous speed, density, and queue buffers and still advances the clock from the header. A full frame is written on the first publish, whenever a vehicle enters or leaves a link, when a seek finishes, and on each stored visual sample. Boundary demand is a veh/h rate on the compiled gateway nodes. Zero emits nothing; it is not an origin-destination matrix. The desktop clock starts at midnight.
 
 ## Invariants the tests lock
 
@@ -367,3 +400,4 @@ repeated edge_count times:
 - Spillback: a closed downstream link stays empty, the next link stops at `S_max`, and the surplus occupies the link behind it. Opening the closure lets every spawned vehicle complete.
 - A 4 000-vehicle wave satisfies `spawned = active + completed` on every step, and the last arrival matches free-flow time plus discharge at the triangular capacity.
 - Flashing amber on an otherwise empty major approach cuts mean delay by more than the red interval of the fixed cycle. A driver whose experienced cost exceeds 1.4 times free-flow leaves the habitual path; a driver inside that band does not.
+- A queued link reports a speed ratio below free-flow, VHT and VKT accumulate with the vehicles that actually travelled, and restoring a snapshot returns the same clock and the same queue.

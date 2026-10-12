@@ -4,9 +4,15 @@
   "version": "0.1.0",
   "identifier": "gr.traffic.simulation",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../ui",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "../ui"
+    },
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build --prefix ../ui",
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "../ui"
+    },
     "frontendDist": "../ui/dist"
   },
   "app": {

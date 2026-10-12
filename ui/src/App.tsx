@@ -1,7 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
-import { chooseOsmFile, desktopShell, ingestNetwork, listPresets, loadGeometry } from "./api";
-import { NetworkMap } from "./NetworkMap";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  chooseOsmFile,
+  compiledCache,
+  controlSimulation,
+  desktopShell,
+  ingestNetwork,
+  listPresets,
+  loadGeometry,
+  openSimulation,
+  readFrame,
+  simulationStatus,
+  type SimulationControl,
+} from "./api";
+import { Dashboard } from "./Dashboard";
+import { decodeFrame, type Bottleneck, type FrameHeader } from "./frame";
+import { NetworkMap, type MapHandle } from "./NetworkMap";
 import { decodeViewport, type BBox, type IngestReport, type Preset } from "./protocol";
+
+let autoloadStarted = false;
 
 type SourceMode = "preset" | "bbox" | "file";
 
@@ -19,6 +35,20 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<IngestReport | null>(null);
   const [network, setNetwork] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [running, setRunning] = useState(false);
+  const [header, setHeader] = useState<FrameHeader | null>(null);
+  const [bottlenecks, setBottlenecks] = useState<Bottleneck[]>([]);
+  const [viewFps, setViewFps] = useState(0);
+  const [streamFps, setStreamFps] = useState(0);
+  const [scrub, setScrub] = useState(0);
+  const [speed, setSpeed] = useState(1);
+  const [demand, setDemand] = useState(0);
+  const [signal, setSignal] = useState<"clock" | "fixed" | "flashing">("clock");
+  const [showQueue, setShowQueue] = useState(true);
+  const [spark, setSpark] = useState<number[]>([]);
+  const mapRef = useRef<MapHandle>(null);
+  const dragging = useRef(false);
+  const seen = useRef<FrameHeader | null>(null);
 
   useEffect(() => {
     if (!desktop) {
@@ -35,6 +65,133 @@ export function App() {
       })
       .catch((reason: unknown) => setError(message(reason)));
   }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop || autoloadStarted) {
+      return;
+    }
+    autoloadStarted = true;
+    compiledCache()
+      .then(async (path) => {
+        if (!path) {
+          return;
+        }
+        await showNetwork(path);
+      })
+      .catch((reason: unknown) => setError(message(reason)));
+    // React remounts this effect once in development. A cleanup flag would drop the only load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!dragging.current && header) {
+      setScrub(header.timeS % 86400);
+    }
+  }, [header]);
+
+  useEffect(() => {
+    if (!desktop || !running) {
+      return;
+    }
+    let stop = false;
+    let since = 0;
+    let views = 0;
+    let streams = 0;
+    let stamp = performance.now();
+    let paintedAt = 0;
+    let inflight = false;
+    let statusTicks = 0;
+    const tick = () => {
+      if (stop) {
+        return;
+      }
+      views += 1;
+      const now = performance.now();
+      if (now - stamp >= 1000) {
+        setViewFps(views);
+        setStreamFps(streams);
+        views = 0;
+        streams = 0;
+        stamp = now;
+      }
+      if (!inflight) {
+        inflight = true;
+        readFrame(since)
+          .then(async (bytes) => {
+            if (stop) {
+              return;
+            }
+            if (bytes.byteLength > 0) {
+              const decoded = decodeFrame(bytes);
+              since = decoded.header.sequence;
+              streams += 1;
+              if (!decoded.unchanged && decoded.speedRatio.length > 0) {
+                mapRef.current?.setFields(decoded.speedRatio, decoded.densityRatio);
+                setBottlenecks(decoded.bottlenecks);
+              }
+              const previous = seen.current;
+              const flagsChanged =
+                !previous ||
+                previous.paused !== decoded.header.paused ||
+                previous.seeking !== decoded.header.seeking;
+              const clockChanged =
+                !previous ||
+                previous.timeS !== decoded.header.timeS ||
+                previous.active !== decoded.header.active ||
+                previous.meanSpeedMps !== decoded.header.meanSpeedMps;
+              if (flagsChanged || (clockChanged && performance.now() - paintedAt >= 100)) {
+                paintedAt = performance.now();
+                seen.current = decoded.header;
+                setHeader(decoded.header);
+                if (
+                  !previous ||
+                  previous.meanSpeedMps !== decoded.header.meanSpeedMps ||
+                  Math.floor(previous.timeS) !== Math.floor(decoded.header.timeS)
+                ) {
+                  setSpark((samples) => {
+                    const next = samples.length >= 120 ? samples.slice(samples.length - 119) : samples.slice();
+                    next.push(decoded.header.meanSpeedMps * 3.6);
+                    return next;
+                  });
+                }
+              }
+            }
+            statusTicks += 1;
+            if (statusTicks % 90 === 0) {
+              const status = await simulationStatus();
+              if (!stop && status.error) {
+                setError(status.error);
+              }
+            }
+          })
+          .catch((reason) => {
+            if (!stop) {
+              setError(message(reason));
+            }
+          })
+          .finally(() => {
+            inflight = false;
+          });
+      }
+      requestAnimationFrame(tick);
+    };
+    const frameId = requestAnimationFrame(tick);
+    return () => {
+      stop = true;
+      cancelAnimationFrame(frameId);
+    };
+  }, [desktop, running]);
+
+  async function showNetwork(cachePath: string) {
+    const bytes = await loadGeometry(cachePath);
+    setNetwork(decodeViewport(bytes));
+    await openSimulation(cachePath);
+    setRunning(true);
+    setHeader(null);
+    setBottlenecks([]);
+    setSpark([]);
+    seen.current = null;
+  }
 
   const center = useMemo<[number, number]>(() => {
     const box = report?.stats.bbox ?? bbox;
@@ -55,9 +212,8 @@ export function App() {
         throw new Error("Choose an .osm, .xml, or .pbf file first.");
       }
       const next = await ingestNetwork(request);
-      const bytes = await loadGeometry(next.cachePath);
       setReport(next);
-      setNetwork(decodeViewport(bytes));
+      await showNetwork(next.cachePath);
     } catch (reason) {
       setError(message(reason));
     } finally {
@@ -78,10 +234,71 @@ export function App() {
     }
   }
 
+  async function send(control: SimulationControl) {
+    if (!desktop || !running) {
+      return;
+    }
+    try {
+      await controlSimulation(control);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  }
+
+  function edgeLabel(edge: number) {
+    const feature = network?.features[edge];
+    const name = feature?.properties && typeof feature.properties === "object" && "className" in feature.properties ? String(feature.properties.className) : "link";
+    return name.replaceAll("_", " ");
+  }
+
   return (
     <main className="relative h-full overflow-hidden bg-[#10140f] text-[#e6e1d6]">
-      <NetworkMap center={center} data={network} />
-      <aside className="absolute top-4 left-4 z-10 flex max-h-[calc(100%-2rem)] w-[22.5rem] flex-col gap-4 overflow-auto rounded-md border border-[#2a3128] bg-[#161c14]/95 p-4 shadow-2xl backdrop-blur">
+      <NetworkMap ref={mapRef} center={center} data={network} showQueue={showQueue} />
+      <Dashboard
+        desktop={desktop}
+        running={running}
+        header={header}
+        bottlenecks={bottlenecks}
+        edgeLabel={edgeLabel}
+        viewFps={viewFps}
+        streamFps={streamFps}
+        scrub={scrub}
+        speed={speed}
+        demand={demand}
+        signal={signal}
+        showQueue={showQueue}
+        spark={spark}
+        onScrub={(value, commit) => {
+          dragging.current = !commit;
+          setScrub(value);
+          if (commit) {
+            void send({ seekS: value });
+          }
+        }}
+        onTogglePause={() => {
+          const next = !(header?.paused ?? false);
+          void send({ paused: next });
+        }}
+        onSpeed={(value) => {
+          setSpeed(value);
+          void send({ speed: value });
+        }}
+        onDemand={(value) => {
+          if (!Number.isFinite(value)) {
+            return;
+          }
+          const next = Math.max(0, Math.min(100000, value));
+          setDemand(next);
+          void send({ demandPerHour: next });
+        }}
+        onSignal={(value) => {
+          setSignal(value);
+          void send({ signal: value });
+        }}
+        onQueue={setShowQueue}
+        onCamera={(preset) => mapRef.current?.camera(preset)}
+      />
+      <aside className="absolute top-4 left-4 z-10 flex max-h-[calc(100%-6.5rem)] w-[22.5rem] flex-col gap-4 overflow-auto rounded-md border border-[#2a3128] bg-[#161c14]/95 p-4 shadow-2xl backdrop-blur">
         <header>
           <p className="text-[0.68rem] tracking-[0.18em] text-[#a89878] uppercase">Urban traffic model</p>
           <h1 className="mt-1 text-xl font-semibold text-[#f3efe4]">Network compiler</h1>

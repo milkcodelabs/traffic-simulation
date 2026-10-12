@@ -1,6 +1,8 @@
 //! Acceptance tests for spillback, mass conservation, flashing amber, and route inertia.
 //! The networks are small constructed graphs with explicit geometry. The flow on them is the engine's.
 
+use std::sync::Arc;
+
 use sim_core::{
     plan_signal, realize_edge, Approach, AssembleInput, BBox, DiagramFamily, Edge, EdgeDraft, EdgeFlags, EdgeId,
     EdgeScale, LonLat, Movement, Network, Node, NodeId, NodeKind, RoadClass, Scenario, SignalId, SignalSchedule, Turn,
@@ -277,6 +279,144 @@ fn drivers_keep_a_mild_path_and_leave_when_delay_exceeds_inertia() {
         pinned.vehicles().iter().any(|vehicle| vehicle.inertia > 10.0 && vehicle.path.contains(&choke)),
         "pinned drivers stay on the habitual path while their delay is inside the inertia band"
     );
+}
+
+#[test]
+fn telemetry_tracks_queue_delay_and_a_snapshot_restores_it() {
+    let network = Arc::new(assemble(
+        vec![node(NodeKind::Gateway, 0.0, 0.0), node(NodeKind::Gateway, 200.0, 0.0)],
+        vec![link(
+            NodeId(0),
+            NodeId(1),
+            &[(0.0, 0.0), (200.0, 0.0)],
+            RoadClass::Residential,
+            1,
+            10.0,
+            1,
+        )],
+        Vec::new(),
+        Vec::new(),
+    ));
+    let length = network.edges[0].length_m;
+    let mut sim = Simulation::shared(Arc::clone(&network), Scenario::baseline("telemetry"));
+    sim.schedule((0..15).map(|_| Trip::new(0.0, NodeId(0), NodeId(1))));
+    sim.advance(30.0, 1.0).expect("conservation while the queue forms");
+    let mut speed = [0.0_f32];
+    let mut density = [0.0_f32];
+    let mut queue = [0.0_f32];
+    sim.write_link_fields(&mut speed, &mut density, &mut queue);
+    assert!(speed[0] < 0.95, "fifteen vehicles on one link must fall below free-flow, ratio {}", speed[0]);
+    assert!(queue[0] > 0.0, "vehicles that have spent their free-flow time are the queue");
+    assert!(density[0] > 0.0);
+    assert!(sim.mean_speed_mps() < 10.0);
+    let on_link = sim.link_vehicles(EdgeId(0));
+    let snap = sim.snapshot();
+    let queued_vht = sim.vht_s();
+    sim.advance(40.0, 1.0).expect("conservation after the snapshot");
+    let mut restored = Simulation::restore(Arc::clone(&network), snap);
+    assert!((restored.time() - 30.0).abs() < 1e-9);
+    assert!((restored.vht_s() - queued_vht).abs() < 1e-6);
+    assert_eq!(restored.link_vehicles(EdgeId(0)), on_link);
+    restored.advance(400.0, 1.0).expect("the restored run still conserves vehicles");
+    let census = restored.census();
+    assert_eq!(census.spawned, 15);
+    assert_eq!(census.completed, 15);
+    assert_eq!(census.active, 0);
+    assert!((restored.vkt_m() - 15.0 * length).abs() < 1e-6);
+    assert!(restored.delay_s() > 0.0, "the queue must add delay beyond free-flow");
+    assert!(restored.vht_s() > 15.0 * length / 10.0);
+    restored.write_link_fields(&mut speed, &mut density, &mut queue);
+    assert!((speed[0] - 1.0).abs() < 1e-6);
+    assert!((restored.mean_speed_mps() - 10.0).abs() < 1e-6);
+}
+
+#[test]
+fn idle_advance_matches_an_empty_signal_step_for_step() {
+    let network = signal_approaches();
+    let mut fixed = Scenario::baseline("idle-fixed");
+    fixed.signal_schedule = SignalSchedule::ForceFixed;
+    let stepped_done = finish_after_idle(network.clone(), fixed.clone(), false);
+    let jumped_done = finish_after_idle(network.clone(), fixed, true);
+    assert_eq!(stepped_done, jumped_done);
+
+    let mut night = Scenario::baseline("idle-night");
+    night.signal_schedule = SignalSchedule::Unchanged;
+    let stepped_night = finish_across_dawn(network.clone(), night.clone(), false);
+    let jumped_night = finish_across_dawn(network, night, true);
+    assert_eq!(stepped_night, jumped_night);
+}
+
+fn finish_after_idle(network: Network, scenario: Scenario, jump: bool) -> f64 {
+    let mut sim = Simulation::new(network, scenario);
+    sim.set_clock_origin(12.0 * 3600.0);
+    if jump {
+        assert_eq!(sim.idle_advance(240), 240);
+    } else {
+        sim.advance(240.0, 1.0).expect("empty fixed cycle");
+    }
+    sim.schedule([Trip::new(sim.time(), NodeId(0), NodeId(2))]);
+    completion_time(&mut sim)
+}
+
+fn finish_across_dawn(network: Network, scenario: Scenario, jump: bool) -> f64 {
+    let mut sim = Simulation::new(network, scenario);
+    sim.set_clock_origin(4.0 * 3600.0);
+    if jump {
+        assert_eq!(sim.idle_advance(3 * 3600), 3 * 3600);
+    } else {
+        sim.advance(3.0 * 3600.0, 1.0).expect("empty dawn");
+    }
+    sim.schedule([Trip::new(sim.time(), NodeId(0), NodeId(2))]);
+    completion_time(&mut sim)
+}
+
+fn completion_time(sim: &mut Simulation) -> f64 {
+    for _ in 0..800 {
+        sim.step(1.0).expect("trip after idle");
+        if sim.census().completed == 1 {
+            return sim.time();
+        }
+    }
+    panic!("the trip did not finish");
+}
+
+fn signal_approaches() -> Network {
+    let nodes = vec![
+        node(NodeKind::Gateway, 0.0, 0.0),
+        node(NodeKind::Signalized, 400.0, 0.0),
+        node(NodeKind::Gateway, 800.0, 0.0),
+        node(NodeKind::Gateway, 400.0, -200.0),
+    ];
+    let edges = vec![
+        link(NodeId(0), NodeId(1), &[(0.0, 0.0), (400.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 1),
+        link(NodeId(1), NodeId(2), &[(400.0, 0.0), (800.0, 0.0)], RoadClass::Primary, 2, 50.0 / 3.6, 2),
+        link(NodeId(3), NodeId(1), &[(400.0, -200.0), (400.0, 0.0)], RoadClass::Residential, 1, 30.0 / 3.6, 3),
+    ];
+    let east = edges[0].bearings().expect("eastbound bearing").1;
+    let north = edges[2].bearings().expect("northbound bearing").1;
+    let signal = plan_signal(
+        NodeId(1),
+        SignalId(0),
+        &[
+            Approach {
+                edge: EdgeId(0),
+                bearing_rad: east,
+                lanes: edges[0].lanes,
+                rank: edges[0].class.rank(),
+            },
+            Approach {
+                edge: EdgeId(2),
+                bearing_rad: north,
+                lanes: edges[2].lanes,
+                rank: edges[2].class.rank(),
+            },
+        ],
+    );
+    let turns = vec![
+        through(NodeId(1), EdgeId(0), EdgeId(1)),
+        through(NodeId(1), EdgeId(2), EdgeId(1)),
+    ];
+    assemble(nodes, edges, turns, vec![signal])
 }
 
 fn run_delay(network: Network, scenario: Scenario, departures: &[Trip]) -> f64 {

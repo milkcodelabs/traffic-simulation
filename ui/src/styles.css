@@ -17,3 +17,8 @@ body,
 .maplibregl-ctrl-attrib a {
   color: #d7c4a1 !important;
 }
+
+.maplibregl-ctrl-top-right {
+  top: 0.75rem;
+  right: 22rem;
+}

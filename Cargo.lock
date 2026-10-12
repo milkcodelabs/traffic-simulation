@@ -4245,6 +4245,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sim-core",
+ "sim-engine",
  "sim-ingest",
  "sim-ipc",
  "tauri",

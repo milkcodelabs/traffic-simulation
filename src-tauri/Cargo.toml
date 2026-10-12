@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sim-core = { path = "../crates/sim-core" }
+sim-engine = { path = "../crates/sim-engine" }
 sim-ingest = { path = "../crates/sim-ingest" }
 sim-ipc = { path = "../crates/sim-ipc" }
 tauri = { version = "2", features = [] }

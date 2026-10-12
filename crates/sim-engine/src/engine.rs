@@ -79,6 +79,8 @@ pub enum EngineError {
     LinkMismatch { edge: u32, queued: usize, counted: f64 },
     #[error("edge {edge} holds {queued} vehicles above its storage {storage}")]
     Storage { edge: u32, queued: usize, storage: f64 },
+    #[error("{what} became non-finite")]
+    NonFinite { what: &'static str },
 }
 
 #[derive(Clone)]
@@ -139,17 +141,63 @@ struct NodeProposal {
     reroutes: u32,
 }
 
-/// Accumulated over the first thousand `step` calls, then printed once.
+/// Stage timers for one window of `step` calls.
+///
+/// `link_ns` includes serial apply. `apply_ns` is that serial portion alone.
+/// Signal time is the discharge-credit evaluation inside each busy node, which is
+/// how this stepper advances signals: there is no separate controller sweep.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepTimings {
+    pub routing_ns: u128,
+    pub link_ns: u128,
+    pub apply_ns: u128,
+    pub signals_ns: u128,
+    pub recording_ns: u128,
+    pub ticks: u64,
+    pub busy_ticks: u64,
+    /// Sum of busy-node counts over `busy_ticks`.
+    pub busy_node_visits: u64,
+}
+
+/// Retained buffers of one running stepper, counted from allocator capacities.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BufferFootprint {
+    pub vehicle_records: u64,
+    pub vehicle_paths: u64,
+    pub link_queues: u64,
+    pub waiting: u64,
+    pub edge_state: u64,
+    pub routing_scratch: u64,
+    pub pending_trips: u64,
+}
+
+impl BufferFootprint {
+    pub fn total(self) -> u64 {
+        self.vehicle_records
+            + self.vehicle_paths
+            + self.link_queues
+            + self.waiting
+            + self.edge_state
+            + self.routing_scratch
+            + self.pending_trips
+    }
+}
+
+/// Accumulates for the whole run. A one-line summary is printed at 1,000 ticks
+/// unless the caller asked for quiet timings.
 #[derive(Clone, Copy, Default)]
 struct StepProfile {
     routing_ns: u128,
     weights_ns: u128,
     link_ns: u128,
+    apply_ns: u128,
     signals_ns: u128,
     recording_ns: u128,
     ticks: u64,
     busy_ticks: u64,
+    busy_node_visits: u64,
     printed: bool,
+    quiet: bool,
 }
 
 /// Per-edge record of vehicles that have left the link. An unobserved speed is NaN.
@@ -239,6 +287,19 @@ pub struct Simulation {
     route_searches: u64,
     reroute_searches: u64,
     rejected_trips: u64,
+    /// Set when the scenario is opened for mutation. The next step rebuilds route weights
+    /// so a closure is visible to path search on that step, not only to discharge.
+    routing_dirty: bool,
+    /// Highest `N / S_max` seen on any occupied edge.
+    max_density: f64,
+    /// Most edges that were at storage in a single step.
+    max_full_edges: u32,
+    /// Longest spatial queue observed, in vehicles.
+    max_queue: u32,
+    /// Most vehicles waiting to enter an edge that was already at storage.
+    max_spillback: u32,
+    /// Edge indexes at storage during the latest saturation sample. Reused so the sample does not allocate.
+    full_ids: Vec<u32>,
 }
 
 /// A driver who already searched does not search again until this many seconds have passed.
@@ -295,6 +356,12 @@ impl Simulation {
             route_searches: 0,
             reroute_searches: 0,
             rejected_trips: 0,
+            routing_dirty: false,
+            max_density: 0.0,
+            max_full_edges: 0,
+            max_queue: 0,
+            max_spillback: 0,
+            full_ids: Vec::new(),
         }
     }
 
@@ -336,6 +403,12 @@ impl Simulation {
             route_searches: 0,
             reroute_searches: 0,
             rejected_trips: 0,
+            routing_dirty: false,
+            max_density: 0.0,
+            max_full_edges: 0,
+            max_queue: 0,
+            max_spillback: 0,
+            full_ids: Vec::new(),
         };
         sim.rebuild_routing_state();
         sim
@@ -431,6 +504,7 @@ impl Simulation {
     }
 
     pub fn scenario_mut(&mut self) -> &mut Scenario {
+        self.routing_dirty = true;
         &mut self.scenario
     }
 
@@ -603,11 +677,15 @@ impl Simulation {
         if dt <= 0.0 {
             return Err(EngineError::BadStep);
         }
+        if self.routing_dirty {
+            self.recompute_free_flow();
+            self.routing_dirty = false;
+        }
         let t1 = self.time_s + dt;
         let trip_due = self.pending.first().is_some_and(|trip| trip.depart_s <= t1);
         if !trip_due && self.spawned == self.completed {
             self.time_s = t1;
-            self.record_profile(0, 0, 0, 0, 0, false);
+            self.record_profile(0, 0, 0, 0, 0, 0, 0, false);
             return Ok(());
         }
         let clock = Instant::now();
@@ -620,7 +698,7 @@ impl Simulation {
         if self.busy_ids.is_empty() {
             self.time_s = t1;
             self.vht_s += active_during * dt;
-            self.record_profile(routing_ns, 0, link_ns, 0, 0, false);
+            self.record_profile(routing_ns, 0, link_ns, 0, 0, 0, 0, false);
             return Ok(());
         }
         let nodes = self.busy_ids.clone();
@@ -639,14 +717,168 @@ impl Simulation {
         link_ns += propose_ns.saturating_sub(route_ns.saturating_add(signal_ns));
         let clock = Instant::now();
         self.apply(&proposals, t1);
-        link_ns += clock.elapsed().as_nanos();
+        let apply_ns = clock.elapsed().as_nanos();
+        link_ns += apply_ns;
         let clock = Instant::now();
         self.time_s = t1;
         self.vht_s += active_during * dt;
         let result = self.audit();
+        self.note_saturation();
         let recording_ns = clock.elapsed().as_nanos();
-        self.record_profile(routing_ns, 0, link_ns, signal_ns, recording_ns, true);
+        self.record_profile(
+            routing_ns,
+            0,
+            link_ns,
+            signal_ns,
+            recording_ns,
+            apply_ns,
+            nodes.len() as u32,
+            true,
+        );
         result
+    }
+
+    pub fn max_density(&self) -> f64 {
+        self.max_density
+    }
+
+    pub fn max_full_edges(&self) -> u32 {
+        self.max_full_edges
+    }
+
+    pub fn max_queue(&self) -> u32 {
+        self.max_queue
+    }
+
+    pub fn max_spillback(&self) -> u32 {
+        self.max_spillback
+    }
+
+    /// Suppress the one-shot 1,000-tick profile line. Counters still accumulate.
+    pub fn set_profile_quiet(&mut self, quiet: bool) {
+        self.step_profile.quiet = quiet;
+    }
+
+    /// Zero the stage timers without forgetting the quiet flag.
+    pub fn reset_timings(&mut self) {
+        let quiet = self.step_profile.quiet;
+        self.step_profile = StepProfile {
+            quiet,
+            printed: true,
+            ..StepProfile::default()
+        };
+    }
+
+    pub fn timings(&self) -> StepTimings {
+        let profile = &self.step_profile;
+        StepTimings {
+            routing_ns: profile.routing_ns,
+            link_ns: profile.link_ns,
+            apply_ns: profile.apply_ns,
+            signals_ns: profile.signals_ns,
+            recording_ns: profile.recording_ns,
+            ticks: profile.ticks,
+            busy_ticks: profile.busy_ticks,
+            busy_node_visits: profile.busy_node_visits,
+        }
+    }
+
+    /// Bytes retained by the stepper's own buffers, including spare capacity.
+    /// Completed vehicles stay in the table, so this grows with departures, not with the vehicles still on the road.
+    pub fn buffer_footprint(&self) -> BufferFootprint {
+        fn bytes<T>(capacity: usize) -> u64 {
+            capacity as u64 * std::mem::size_of::<T>() as u64
+        }
+        let mut vehicle_paths = 0u64;
+        for vehicle in &self.vehicles {
+            vehicle_paths += bytes::<EdgeId>(vehicle.path.capacity());
+        }
+        let mut link_queues = bytes::<VecDeque<u64>>(self.queues.queues.capacity());
+        for queue in &self.queues.queues {
+            link_queues += bytes::<u64>(queue.capacity());
+        }
+        let mut waiting = bytes::<Vec<u64>>(self.waiting.capacity());
+        for bucket in &self.waiting {
+            waiting += bytes::<u64>(bucket.capacity());
+        }
+        let edge_state = bytes::<f64>(self.discharge_credit.capacity())
+            + bytes::<f64>(self.free_flow.capacity())
+            + bytes::<f64>(self.edge_delay_s.capacity())
+            + bytes::<f64>(self.edge_travel_s.capacity())
+            + bytes::<f64>(self.edge_distance_m.capacity())
+            + bytes::<f64>(self.credit_at.capacity())
+            + bytes::<f64>(self.experienced.capacity())
+            + bytes::<f64>(self.links.cumulative_in.capacity())
+            + bytes::<f64>(self.links.cumulative_out.capacity())
+            + bytes::<f64>(self.links.cumulative_demand.capacity())
+            + bytes::<u32>(self.demand.capacity())
+            + bytes::<u32>(self.occupied_pos.capacity());
+        let routing_scratch = bytes::<u32>(self.occupied.capacity())
+            + bytes::<u32>(self.active_waiting.capacity())
+            + bytes::<u32>(self.waiting_pos.capacity())
+            + bytes::<u32>(self.just_emptied.capacity())
+            + bytes::<u32>(self.demand_touched.capacity())
+            + bytes::<u32>(self.busy_ids.capacity())
+            + bytes::<u32>(self.full_ids.capacity());
+        BufferFootprint {
+            vehicle_records: bytes::<Vehicle>(self.vehicles.capacity()),
+            vehicle_paths,
+            link_queues,
+            waiting,
+            edge_state,
+            routing_scratch,
+            pending_trips: bytes::<Trip>(self.pending.capacity()),
+        }
+    }
+
+    /// Records how close the network came to jam density, and how many vehicles
+    /// were held upstream of a link that could not take another vehicle.
+    fn note_saturation(&mut self) {
+        self.full_ids.clear();
+        let mut peak = 0.0_f64;
+        for &edge in &self.occupied {
+            let index = edge as usize;
+            let storage = self.network.edges[index].storage_max_veh;
+            let queued = self.queues.queues[index].len() as f64;
+            let density = if storage > 1e-9 {
+                queued / storage
+            } else if queued > 0.0 {
+                1.0
+            } else {
+                0.0
+            };
+            peak = peak.max(density);
+            let queued_n = self.queues.queues[index].len() as u32;
+            if queued_n > self.max_queue {
+                self.max_queue = queued_n;
+            }
+            // The stepper admits a vehicle only when at least one whole space remains.
+            if storage_inflow_ceiling(storage, queued) < 1.0 {
+                self.full_ids.push(edge);
+            }
+        }
+        self.full_ids.sort_unstable();
+        let mut held = 0u32;
+        for &node in &self.active_waiting {
+            for id in &self.waiting[node as usize] {
+                let Some(edge) = self.vehicles[*id as usize].path.first().copied() else {
+                    continue;
+                };
+                if self.full_ids.binary_search(&(edge.index() as u32)).is_ok() {
+                    held += 1;
+                }
+            }
+        }
+        if peak > self.max_density {
+            self.max_density = peak;
+        }
+        let full = self.full_ids.len() as u32;
+        if full > self.max_full_edges {
+            self.max_full_edges = full;
+        }
+        if held > self.max_spillback {
+            self.max_spillback = held;
+        }
     }
 
     fn record_profile(
@@ -656,22 +888,23 @@ impl Simulation {
         link_ns: u128,
         signals_ns: u128,
         recording_ns: u128,
+        apply_ns: u128,
+        busy_nodes: u32,
         busy: bool,
     ) {
         let profile = &mut self.step_profile;
-        if profile.printed {
-            return;
-        }
         profile.routing_ns += routing_ns;
         profile.weights_ns += weights_ns;
         profile.link_ns += link_ns;
+        profile.apply_ns += apply_ns;
         profile.signals_ns += signals_ns;
         profile.recording_ns += recording_ns;
         profile.ticks += 1;
         if busy {
             profile.busy_ticks += 1;
+            profile.busy_node_visits += u64::from(busy_nodes);
         }
-        if profile.ticks < 1000 {
+        if profile.quiet || profile.printed || profile.ticks < 1000 {
             return;
         }
         profile.printed = true;
@@ -680,12 +913,13 @@ impl Simulation {
         let rate = 1000.0 / seconds.max(1e-9);
         let search_ns = profile.routing_ns.saturating_sub(profile.weights_ns);
         eprintln!(
-            "profile 1000 ticks in {seconds:.3}s  {rate:.1} ticks/s  busy {busy}\n  time_routing {routing:.3}s  (weights {weights:.3}s  searches {search:.3}s)\n  time_link_dynamics {link:.3}s\n  time_signals {signals:.3}s\n  time_recording {recording:.3}s",
+            "profile 1000 ticks in {seconds:.3}s  {rate:.1} ticks/s  busy {busy}\n  time_routing {routing:.3}s  (weights {weights:.3}s  searches {search:.3}s)\n  time_link_dynamics {link:.3}s  (apply {apply:.3}s)\n  time_signals {signals:.3}s\n  time_recording {recording:.3}s",
             busy = profile.busy_ticks,
             routing = profile.routing_ns as f64 / 1e9,
             weights = profile.weights_ns as f64 / 1e9,
             search = search_ns as f64 / 1e9,
             link = profile.link_ns as f64 / 1e9,
+            apply = profile.apply_ns as f64 / 1e9,
             signals = profile.signals_ns as f64 / 1e9,
             recording = profile.recording_ns as f64 / 1e9,
         );
@@ -843,22 +1077,39 @@ impl Simulation {
             .iter()
             .position(|trip| trip.depart_s > t1)
             .unwrap_or(self.pending.len());
+        if split == 0 {
+            return;
+        }
         let due: Vec<Trip> = self.pending.drain(..split).collect();
+        // Free-flow time, with zero-capacity edges removed. If every path is severed, fall
+        // back to the geometric shortest path so the trip still queues instead of vanishing.
+        let usable = self.departure_weights();
         for trip in due {
             let id = self.vehicles.len() as u64;
             let inertia = trip.inertia.unwrap_or(self.scenario.route_inertia);
-            let routed = shortest_path(&self.network, &self.free_flow, trip.origin, trip.destination);
             self.route_searches += 1;
-            let Some((path, habitual)) = routed else {
-                self.rejected_trips += 1;
-                if self.rejected_trips <= 12 || self.rejected_trips % 1000 == 0 {
-                    eprintln!(
-                        "rejected unroutable departure {:.0}s {} -> {} ({} so far)",
-                        trip.depart_s, trip.origin.0, trip.destination.0, self.rejected_trips
-                    );
-                }
-                continue;
+            let preferred = shortest_path(&self.network, &usable, trip.origin, trip.destination);
+            let path = if let Some((path, _)) = preferred {
+                path
+            } else {
+                self.route_searches += 1;
+                let Some((path, _)) = shortest_path(&self.network, &self.free_flow, trip.origin, trip.destination) else {
+                    self.rejected_trips += 1;
+                    if self.rejected_trips <= 12 || self.rejected_trips % 1000 == 0 {
+                        eprintln!(
+                            "rejected unroutable departure {:.0}s {} -> {} ({} so far)",
+                            trip.depart_s, trip.origin.0, trip.destination.0, self.rejected_trips
+                        );
+                    }
+                    continue;
+                };
+                path
             };
+            let habitual = path_cost(&path, &self.free_flow);
+            if !habitual.is_finite() {
+                self.rejected_trips += 1;
+                continue;
+            }
             self.vehicles.push(Vehicle {
                 id,
                 origin: trip.origin,
@@ -1096,14 +1347,37 @@ impl Simulation {
         self.time_s >= vehicle.route_checked_s + REROUTE_COOLDOWN_S
     }
 
+    fn departure_weights(&self) -> Vec<f64> {
+        self.free_flow
+            .iter()
+            .enumerate()
+            .map(|(index, weight)| {
+                let capacity = scaled_capacity(
+                    self.network.edges[index].capacity_veh_per_s,
+                    EdgeId(index as u32),
+                    &self.scenario,
+                );
+                if !weight.is_finite() || capacity <= 1e-12 {
+                    f64::INFINITY
+                } else {
+                    *weight
+                }
+            })
+            .collect()
+    }
+
     /// A queued vehicle cannot leave the link it is already on. A new path is considered
-    /// only at a junction with two or more exits, and only when more than 300 m remain.
+    /// only at a junction with two or more exits. Mild delay is ignored inside the last
+    /// 300 m. A severed remaining edge is not mild delay: the driver may leave it at once.
     fn may_reroute(&self, node: NodeId, path: &[EdgeId], from_cursor: usize) -> bool {
         if self.network.adjacency.outgoing(node).len() < 2 {
             return false;
         }
         let mut metres = 0.0;
         for edge in path.iter().skip(from_cursor) {
+            if !self.experienced[edge.index()].is_finite() {
+                return true;
+            }
             metres += self.network.edges[edge.index()].length_m;
             if metres >= REROUTE_MIN_REMAINING_M {
                 return true;
@@ -1266,6 +1540,9 @@ impl Simulation {
     }
 
     fn audit(&mut self) -> Result<(), EngineError> {
+        if !self.vht_s.is_finite() || !self.vkt_m.is_finite() || !self.delay_s.is_finite() {
+            return Err(EngineError::NonFinite { what: "network totals" });
+        }
         let census = self.census();
         if census.spawned != census.active + census.completed {
             return Err(EngineError::Conservation {
@@ -1305,6 +1582,9 @@ impl Simulation {
                 queued,
                 storage,
             });
+        }
+        if !self.discharge_credit[index].is_finite() {
+            return Err(EngineError::NonFinite { what: "discharge credit" });
         }
         Ok(())
     }
@@ -1562,10 +1842,14 @@ enum NodeControl {
 }
 
 fn discharge_slots(open: bool, capacity: f64, credit: f64, dt: f64) -> (u32, f64) {
-    if !open || capacity <= 0.0 || dt <= 0.0 {
+    let credit = if credit.is_finite() && credit >= 0.0 { credit } else { 0.0 };
+    if !open || !(capacity > 0.0) || !(dt > 0.0) || !capacity.is_finite() || !dt.is_finite() {
         return (0, credit);
     }
     let offered = credit + capacity * dt;
+    if !offered.is_finite() {
+        return (0, 0.0);
+    }
     let slots = offered.floor();
     let remainder = offered - slots;
     (slots as u32, remainder)

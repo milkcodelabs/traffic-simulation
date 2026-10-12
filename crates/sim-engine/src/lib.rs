@@ -19,6 +19,9 @@ pub use demand::{
     gateway_zone_scales, retain_routable, BoundaryDemand, DemandCursor, SeededCursor,
 };
 pub use diff::{compare_edge, distribution, Distribution, DIFF_DEGRADED, DIFF_IMPROVED, DIFF_NEUTRAL};
-pub use engine::{Census, EdgeObservation, EngineError, SimSnapshot, Simulation, Trip, Vehicle};
+pub use engine::{
+    BufferFootprint, Census, EdgeObservation, EngineError, SimSnapshot, Simulation, StepTimings, Trip, Vehicle,
+};
+pub use route::local_router_scratch_bytes;
 pub use overlay::{closure_scale, is_ring_or_motorway, lane_closure_scales, text_is_ring};
 pub use route::should_reroute;

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frame bench</title>
+    <link href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+      html, body, #map { margin: 0; height: 100%; width: 100%; background: #111; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script type="module">
+      import maplibregl from "https://esm.sh/maplibre-gl@5.6.1";
+      import { MapboxOverlay } from "https://esm.sh/@deck.gl/mapbox@9.1.14";
+      import { PathLayer } from "https://esm.sh/@deck.gl/layers@9.1.14";
+
+      const status = document.createElement("pre");
+      status.style.cssText = "position:absolute;z-index:2;color:#eee;background:#000a;padding:8px;max-width:40rem";
+      document.body.appendChild(status);
+      const note = (text) => { status.textContent = text; };
+
+      function color(ratio) {
+        if (ratio >= 0.8) return [61, 190, 110, 230];
+        if (ratio >= 0.5) return [226, 162, 58, 235];
+        if (ratio >= 0.25) return [210, 75, 58, 240];
+        return [110, 30, 51, 245];
+      }
+      function queueColor(density) {
+        if (density <= 0.02) return [0, 0, 0, 0];
+        const alpha = Math.round(50 + 170 * Math.min(1, density));
+        if (density < 0.35) return [226, 162, 58, alpha];
+        if (density < 0.7) return [210, 75, 58, alpha];
+        return [110, 30, 51, Math.min(255, alpha + 20)];
+      }
+
+      try {
+        note("loading paths");
+        const response = await fetch("../docs/perf-paths.json");
+        const payload = await response.json();
+        const paths = payload.paths.map((path, index) => ({ index, path, lanes: 1 }));
+        const speed = new Float32Array(paths.length);
+        const density = new Float32Array(paths.length);
+        for (let index = 0; index < paths.length; index += 1) {
+          speed[index] = (index * 17 % 100) / 100;
+          density[index] = (index * 13 % 80) / 100;
+        }
+        const map = new maplibregl.Map({
+          container: "map",
+          style: {
+            version: 8,
+            sources: {},
+            layers: [{ id: "bg", type: "background", paint: { "background-color": "#111" } }],
+          },
+          center: [22.95, 40.63],
+          zoom: 12,
+        });
+        const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+        map.addControl(overlay);
+        await new Promise((resolve) => map.on("load", resolve));
+        let version = 0;
+        const paint = () => {
+          version += 1;
+          overlay.setProps({
+            layers: [
+              new PathLayer({
+                id: "queues",
+                data: paths,
+                pickable: false,
+                getPath: (road) => road.path,
+                getColor: (road) => queueColor(density[road.index] ?? 0),
+                getWidth: (road) => 3 + 16 * (density[road.index] ?? 0),
+                widthUnits: "pixels",
+                widthMinPixels: 1,
+                capRounded: true,
+                jointRounded: true,
+                parameters: { depthCompare: "always", depthWriteEnabled: false },
+                updateTriggers: { getColor: version, getWidth: version },
+              }),
+              new PathLayer({
+                id: "congestion",
+                data: paths,
+                pickable: false,
+                getPath: (road) => road.path,
+                getColor: (road) => color(speed[road.index] ?? 1),
+                getWidth: (road) => 1.4 + road.lanes * 0.9,
+                widthUnits: "pixels",
+                widthMinPixels: 1,
+                capRounded: true,
+                jointRounded: true,
+                parameters: { depthCompare: "always", depthWriteEnabled: false },
+                updateTriggers: { getColor: version },
+              }),
+            ],
+          });
+        };
+        const canvas = map.getCanvas();
+        const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+        let renderer = "unknown";
+        if (gl) {
+          const ext = gl.getExtension("WEBGL_debug_renderer_info");
+          if (ext) renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+        }
+        const sample = (frames) => new Promise((resolve) => {
+          const cpu = [];
+          const presented = [];
+          let seen = 0;
+          let last = performance.now();
+          const step = (now) => {
+            const started = performance.now();
+            speed[seen % speed.length] = (seen % 100) / 100;
+            density[(seen * 3) % density.length] = (seen % 80) / 100;
+            paint();
+            cpu.push(performance.now() - started);
+            if (seen > 0) presented.push(now - last);
+            last = now;
+            seen += 1;
+            if (seen < frames) requestAnimationFrame(step);
+            else resolve({ cpu, presented });
+          };
+          requestAnimationFrame(step);
+        });
+        note(`warming ${paths.length} paths`);
+        await sample(8);
+        note("measuring");
+        const measured = await sample(45);
+        const stats = (values) => {
+          const sorted = [...values].sort((a, b) => a - b);
+          const sum = sorted.reduce((acc, value) => acc + value, 0);
+          const at = (p) => sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * p))];
+          return { n: sorted.length, mean: sum / sorted.length, p50: at(0.5), p95: at(0.95), max: sorted.at(-1) };
+        };
+        window.__GPU_BENCH = {
+          paths: paths.length,
+          points: payload.paths.reduce((sum, path) => sum + path.length, 0),
+          renderer,
+          cpu: stats(measured.cpu),
+          presented: stats(measured.presented),
+        };
+        note(JSON.stringify(window.__GPU_BENCH, null, 2));
+      } catch (error) {
+        window.__GPU_BENCH = { error: String(error && error.stack || error) };
+        note(String(error));
+      }
+    </script>
+  </body>
+</html>

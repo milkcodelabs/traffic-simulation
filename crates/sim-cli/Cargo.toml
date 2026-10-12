@@ -11,6 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+rayon = "1"
+serde_json = "1"
 sim-core = { path = "../sim-core" }
 sim-engine = { path = "../sim-engine" }
 sim-ingest = { path = "../sim-ingest" }
+sim-ipc = { path = "../sim-ipc" }

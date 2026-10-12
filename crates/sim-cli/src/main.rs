@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -6,7 +8,12 @@ use std::path::Path;
 use sim_core::{load_network, BBox};
 use sim_ingest::{default_data_dir, run, IngestRequest, IngestSource};
 
+mod alloc_count;
+mod benchmark;
 mod experiment;
+
+#[global_allocator]
+static GLOBAL: alloc_count::CountingAlloc = alloc_count::CountingAlloc;
 
 #[derive(Parser)]
 #[command(name = "sim-cli", about = "Compile a road network and run headless scenario experiments.")]
@@ -57,6 +64,35 @@ enum Command {
         horizon_s: f64,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+    },
+    /// Measure tick throughput, memory, scaling, and frame encoding on a compiled network.
+    Benchmark {
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        #[arg(long, default_value = "thessaloniki")]
+        preset: String,
+        /// `tick` or `day`. The suite spawns this itself.
+        #[arg(long)]
+        worker: Option<String>,
+        #[arg(long)]
+        threads: Option<usize>,
+        #[arg(long)]
+        vehicles: Option<u64>,
+        #[arg(long)]
+        measure_ticks: Option<u32>,
+        #[arg(long)]
+        warmup_s: Option<f64>,
+        #[arg(long)]
+        daily_vehicles: Option<f64>,
+        #[arg(long)]
+        horizon_s: Option<f64>,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// `all`, `loads`, `scale`, `day`, or `static`.
+        #[arg(long, default_value = "all")]
+        only: String,
     },
 }
 
@@ -143,12 +179,45 @@ fn dispatch() -> Result<(), Box<dyn std::error::Error>> {
                 stats.diagram
             );
         }
+        Command::Benchmark {
+            cache,
+            preset,
+            worker,
+            threads,
+            vehicles,
+            measure_ticks,
+            warmup_s,
+            daily_vehicles,
+            horizon_s,
+            seed,
+            output,
+            only,
+        } => {
+            let cache = cache.unwrap_or_else(|| cache_for_preset(&preset));
+            benchmark::dispatch(benchmark::BenchRequest {
+                cache,
+                worker,
+                threads,
+                vehicles,
+                measure_ticks: measure_ticks.unwrap_or(90),
+                warmup_s: warmup_s.unwrap_or(45.0),
+                daily_vehicles: daily_vehicles.unwrap_or(100_000.0),
+                horizon_s: horizon_s.unwrap_or(86_400.0),
+                seed,
+                output: output.unwrap_or_else(|| PathBuf::from("docs/perf-results.json")),
+                only,
+            })?;
+        }
     }
     Ok(())
 }
 
 fn cache_for_preset(preset: &str) -> PathBuf {
     let name = format!("{preset}.simnet");
+    let rooted = sim_ingest::default_data_dir().join("cache").join(&name);
+    if rooted.exists() {
+        return rooted;
+    }
     let candidates = [
         PathBuf::from("data/cache").join(&name),
         PathBuf::from("../data/cache").join(&name),
@@ -156,7 +225,7 @@ fn cache_for_preset(preset: &str) -> PathBuf {
     candidates
         .into_iter()
         .find(|path| Path::new(path).exists())
-        .unwrap_or_else(|| PathBuf::from("data/cache").join(name))
+        .unwrap_or(rooted)
 }
 
 fn parse_bbox(text: &str) -> Result<BBox, String> {

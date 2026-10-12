@@ -296,6 +296,28 @@ impl Scratch {
         }
         self.key = key;
     }
+
+    fn retained_bytes(&self) -> u64 {
+        fn vec_bytes<T>(values: &Vec<T>) -> u64 {
+            values.capacity() as u64 * std::mem::size_of::<T>() as u64
+        }
+        vec_bytes(&self.dist)
+            + vec_bytes(&self.prev_edge)
+            + vec_bytes(&self.prev_node)
+            + vec_bytes(&self.seen)
+            + vec_bytes(&self.settled)
+            + vec_bytes(&self.head)
+            + vec_bytes(&self.degree)
+            + vec_bytes(&self.turn_offset)
+            + vec_bytes(&self.turn_next)
+            + self.heap.len() as u64 * std::mem::size_of::<HeapItem>() as u64
+    }
+}
+
+/// Bytes of the Dijkstra scratchpad on the calling thread.
+/// The binary heap is counted by length, because its spare capacity is not exposed.
+pub fn local_router_scratch_bytes() -> u64 {
+    SCRATCH.with(|cell| cell.borrow().retained_bytes())
 }
 
 thread_local! {

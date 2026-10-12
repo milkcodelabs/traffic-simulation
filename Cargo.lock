@@ -3362,9 +3362,12 @@ name = "sim-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "rayon",
+ "serde_json",
  "sim-core",
  "sim-engine",
  "sim-ingest",
+ "sim-ipc",
 ]
 
 [[package]]
